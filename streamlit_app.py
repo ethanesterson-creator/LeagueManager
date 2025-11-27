@@ -611,6 +611,7 @@ def main():
     st.set_page_config(page_title="Crest League Manager (Stats by Sport)", layout="wide")
     init_state()
 
+    st.sidebar.image("logo-header-2.png", use_column_width=True)
     st.sidebar.title("Crest League Manager")
     st.sidebar.caption("Standings & multi-sport stats")
 
