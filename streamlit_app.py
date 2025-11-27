@@ -44,6 +44,23 @@ DEFAULT_SPORTS = list(SPORT_STAT_CATEGORIES.keys())
 
 
 # -----------------------------------------
+# Helpers to create empty dataframes
+# -----------------------------------------
+
+def new_games_df():
+    return pd.DataFrame(columns=[
+        "game_id", "date", "sport", "team1", "team2", "score1", "score2"
+    ])
+
+
+def new_stats_df():
+    return pd.DataFrame(columns=[
+        "game_id", "sport", "team_name", "player_id", "first_name",
+        "last_name", "bunk", "stat_type", "value"
+    ])
+
+
+# -----------------------------------------
 # Session State Initialization
 # -----------------------------------------
 
@@ -54,21 +71,15 @@ def init_state():
         st.session_state.teams = None   # DataFrame of unique teams
 
     if "games" not in st.session_state:
-        st.session_state.games = pd.DataFrame(columns=[
-            "game_id", "date", "sport", "team1", "team2", "score1", "score2"
-        ])
+        st.session_state.games = new_games_df()
     else:
-        # If games exist from an older version, make sure 'sport' column exists
+        # Backwards compatibility: make sure all columns exist
         if "sport" not in st.session_state.games.columns:
             st.session_state.games["sport"] = "Other"
 
     if "stats" not in st.session_state:
-        st.session_state.stats = pd.DataFrame(columns=[
-            "game_id", "sport", "team_name", "player_id", "first_name",
-            "last_name", "bunk", "stat_type", "value"
-        ])
+        st.session_state.stats = new_stats_df()
     else:
-        # Backwards compatibility: ensure columns exist
         if "sport" not in st.session_state.stats.columns:
             st.session_state.stats["sport"] = "Other"
 
@@ -417,7 +428,7 @@ def page_enter_scores_and_stats():
         st.info("No games yet.")
     else:
         display_games = st.session_state.games.copy()
-        if isinstance(display_games["date"].iloc[0], pd.Timestamp):
+        if not display_games.empty and isinstance(display_games["date"].iloc[0], pd.Timestamp):
             display_games["date"] = display_games["date"].dt.date
         st.dataframe(display_games, use_container_width=True)
 
@@ -504,6 +515,94 @@ def page_leaderboards():
     st.dataframe(display, use_container_width=True)
 
 
+def page_admin():
+    st.header("Admin / Clear Data")
+
+    st.write("Use this page to clear out test rosters, games, and stats.")
+
+    # Quick status
+    roster_rows = 0 if st.session_state.roster is None else len(st.session_state.roster)
+    team_rows = 0 if st.session_state.teams is None else len(st.session_state.teams)
+    game_rows = len(st.session_state.games)
+    stat_rows = len(st.session_state.stats)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Roster rows", roster_rows)
+        st.metric("Teams", team_rows)
+    with col2:
+        st.metric("Games", game_rows)
+        st.metric("Stat entries", stat_rows)
+
+    st.markdown("---")
+
+    # -------------------------
+    # Delete selected games
+    # -------------------------
+    st.subheader("Delete Selected Games (and Their Stats)")
+
+    games = st.session_state.games
+    if games.empty:
+        st.info("No games stored.")
+    else:
+        games_sorted = games.sort_values("date")
+        labels = []
+        ids = []
+        for _, g in games_sorted.iterrows():
+            d = g["date"].date() if isinstance(g["date"], pd.Timestamp) else g["date"]
+            label = f"{g['game_id']} – {d} – {g['sport']} – {g['team1']} vs {g['team2']}"
+            labels.append(label)
+            ids.append(g["game_id"])
+
+        selected_labels = st.multiselect("Select games to delete", labels)
+        label_to_id = dict(zip(labels, ids))
+        selected_ids = [label_to_id[l] for l in selected_labels]
+
+        if selected_ids and st.button("Delete Selected Games"):
+            # Remove selected games
+            st.session_state.games = st.session_state.games[
+                ~st.session_state.games["game_id"].isin(selected_ids)
+            ]
+            # Remove their stats
+            st.session_state.stats = st.session_state.stats[
+                ~st.session_state.stats["game_id"].isin(selected_ids)
+            ]
+            st.success(f"Deleted {len(selected_ids)} game(s) and their stats.")
+
+    st.markdown("---")
+
+    # -------------------------
+    # Delete ALL games & stats
+    # -------------------------
+    st.subheader("Delete ALL Games & Stats (keep roster)")
+
+    st.warning("This will remove every game and every stat entry, but keep your roster and teams.")
+    confirm_all_games = st.checkbox("I understand, delete ALL games & stats")
+    if confirm_all_games and st.button("Delete ALL Games & Stats"):
+        st.session_state.games = new_games_df()
+        st.session_state.stats = new_stats_df()
+        st.success("All games and stats have been deleted.")
+
+    st.markdown("---")
+
+    # -------------------------
+    # Delete EVERYTHING
+    # -------------------------
+    st.subheader("Delete EVERYTHING (Roster, Teams, Games, Stats)")
+
+    st.error(
+        "This will completely reset the app. You will need to upload a new roster "
+        "and re-enter all games and stats."
+    )
+    confirm_everything = st.checkbox("I REALLY understand, delete EVERYTHING")
+    if confirm_everything and st.button("Full Reset: Clear All Data"):
+        st.session_state.roster = None
+        st.session_state.teams = None
+        st.session_state.games = new_games_df()
+        st.session_state.stats = new_stats_df()
+        st.success("All data cleared. Go to Setup to upload a fresh roster.")
+
+
 # -----------------------------------------
 # Main
 # -----------------------------------------
@@ -517,7 +616,7 @@ def main():
 
     page = st.sidebar.radio(
         "Go to",
-        ["Setup", "Enter Scores & Stats", "Standings", "Leaderboards"],
+        ["Setup", "Enter Scores & Stats", "Standings", "Leaderboards", "Admin / Clear Data"],
     )
 
     if page == "Setup":
@@ -528,6 +627,8 @@ def main():
         page_standings()
     elif page == "Leaderboards":
         page_leaderboards()
+    elif page == "Admin / Clear Data":
+        page_admin()
 
 
 if __name__ == "__main__":
