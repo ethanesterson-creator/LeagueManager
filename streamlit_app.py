@@ -3,6 +3,47 @@ import pandas as pd
 from datetime import date
 
 # -----------------------------------------
+# Stat Categories by Sport
+# -----------------------------------------
+
+# You can edit this dictionary to add/remove stats.
+# Keys = Sport names used when you create a game.
+# Values = list of (stat_code, nice_label).
+SPORT_STAT_CATEGORIES = {
+    "Basketball": [
+        ("basket_points", "Points"),
+        ("basket_assists", "Assists"),
+        ("basket_rebounds", "Rebounds"),
+    ],
+    "Softball": [
+        ("soft_hits", "Hits"),
+        ("soft_doubles", "Doubles"),
+        ("soft_home_runs", "Home Runs"),
+    ],
+    "Hockey": [
+        ("hockey_goals", "Goals"),
+        ("hockey_assists", "Assists"),
+    ],
+    "Soccer": [
+        ("soccer_goals", "Goals"),
+        ("soccer_assists", "Assists"),
+    ],
+    "Flag Football": [
+        ("ff_touchdowns", "Touchdowns"),
+        ("ff_catches", "Catches"),
+        ("ff_interceptions", "Interceptions"),
+    ],
+    # Fallback / generic stats if you want simple stuff
+    "Other": [
+        ("points", "Points"),
+        ("assists", "Assists"),
+    ],
+}
+
+DEFAULT_SPORTS = list(SPORT_STAT_CATEGORIES.keys())
+
+
+# -----------------------------------------
 # Session State Initialization
 # -----------------------------------------
 
@@ -11,15 +52,26 @@ def init_state():
         st.session_state.roster = None  # roster DataFrame
     if "teams" not in st.session_state:
         st.session_state.teams = None   # DataFrame of unique teams
+
     if "games" not in st.session_state:
         st.session_state.games = pd.DataFrame(columns=[
-            "game_id", "date", "team1", "team2", "score1", "score2"
+            "game_id", "date", "sport", "team1", "team2", "score1", "score2"
         ])
+    else:
+        # If games exist from an older version, make sure 'sport' column exists
+        if "sport" not in st.session_state.games.columns:
+            st.session_state.games["sport"] = "Other"
+
     if "stats" not in st.session_state:
         st.session_state.stats = pd.DataFrame(columns=[
-            "game_id", "team_name", "player_id", "first_name",
+            "game_id", "sport", "team_name", "player_id", "first_name",
             "last_name", "bunk", "stat_type", "value"
         ])
+    else:
+        # Backwards compatibility: ensure columns exist
+        if "sport" not in st.session_state.stats.columns:
+            st.session_state.stats["sport"] = "Other"
+
     if "points_for_win" not in st.session_state:
         st.session_state.points_for_win = 2
     if "points_for_tie" not in st.session_state:
@@ -105,15 +157,16 @@ def compute_standings():
     return standings
 
 
-def compute_leaderboard(stat_type: str):
+def compute_leaderboard(sport: str, stat_type: str):
     """
-    Aggregates stats by player for given stat_type ("points" or "assists").
+    Aggregates stats by player for a given sport and stat_type
+    (e.g. sport="Basketball", stat_type="basket_points").
     """
     stats = st.session_state.stats
     if stats.empty:
         return pd.DataFrame()
 
-    df = stats[stats["stat_type"] == stat_type]
+    df = stats[(stats["sport"] == sport) & (stats["stat_type"] == stat_type)]
     if df.empty:
         return pd.DataFrame()
 
@@ -192,12 +245,20 @@ def page_enter_scores_and_stats():
         return
 
     teams_list = st.session_state.teams["team_name"].tolist()
+    sports_list = DEFAULT_SPORTS
 
-    st.subheader("New Game")
+    # -------------------------
+    # Section A: Add a new game
+    # -------------------------
+    st.subheader("Add New Game")
 
-    col_date, col_team1, col_team2 = st.columns(3)
+    col_date, col_sport = st.columns(2)
     with col_date:
         game_date = st.date_input("Game Date", value=date.today())
+    with col_sport:
+        sport = st.selectbox("Sport", sports_list, index=0)
+
+    col_team1, col_team2 = st.columns(2)
     with col_team1:
         team1 = st.selectbox("Team 1", teams_list, key="team1_select")
     with col_team2:
@@ -205,144 +266,143 @@ def page_enter_scores_and_stats():
 
     if team1 == team2:
         st.error("Team 1 and Team 2 must be different.")
+    else:
+        col_score1, col_score2 = st.columns(2)
+        with col_score1:
+            score1 = st.number_input(f"{team1} Score", min_value=0, step=1, value=0)
+        with col_score2:
+            score2 = st.number_input(f"{team2} Score", min_value=0, step=1, value=0)
+
+        if st.button("Save Game"):
+            game_id = f"G{len(st.session_state.games) + 1}"
+            new_game = pd.DataFrame([{
+                "game_id": game_id,
+                "date": pd.to_datetime(game_date),
+                "sport": sport,
+                "team1": team1,
+                "team2": team2,
+                "score1": score1,
+                "score2": score2,
+            }])
+            st.session_state.games = pd.concat(
+                [st.session_state.games, new_game], ignore_index=True
+            )
+            st.success(f"Saved game {game_id}: {sport} – {team1} {score1}-{score2} {team2}")
+
+    st.markdown("---")
+
+    # ------------------------------------------
+    # Section B: Enter / Edit stats for a game
+    # ------------------------------------------
+    st.subheader("Enter / Edit Stats for an Existing Game")
+
+    games = st.session_state.games
+    if games.empty:
+        st.info("No games yet. Add a game above first.")
         return
 
-    col_score1, col_score2 = st.columns(2)
-    with col_score1:
-        score1 = st.number_input(f"{team1} Score", min_value=0, step=1, value=0)
-    with col_score2:
-        score2 = st.number_input(f"{team2} Score", min_value=0, step=1, value=0)
+    # Sort games by date
+    games_sorted = games.sort_values("date")
+    game_options = {}
+    for _, g in games_sorted.iterrows():
+        d = g["date"].date() if isinstance(g["date"], pd.Timestamp) else g["date"]
+        label = f"{g['game_id']} – {d} – {g['sport']} – {g['team1']} vs {g['team2']}"
+        game_options[label] = g["game_id"]
 
-    # Temporary key to tie widget values to this matchup
-    temp_key = f"{game_date}_{team1}_{team2}".replace(" ", "_")
+    selected_label = st.selectbox("Choose a game to enter stats for", list(game_options.keys()))
+    selected_game_id = game_options[selected_label]
+    game_row = games[games["game_id"] == selected_game_id].iloc[0]
 
-    st.markdown("### Player Stats (optional)")
+    game_sport = game_row["sport"]
+    team1 = game_row["team1"]
+    team2 = game_row["team2"]
+
+    st.caption(f"Game: {selected_game_id} • {game_sport} • {team1} vs {team2}")
+
+    # Get stat categories for this sport
+    categories = SPORT_STAT_CATEGORIES.get(game_sport, SPORT_STAT_CATEGORIES["Other"])
 
     roster = st.session_state.roster
-
     home_roster = roster[roster["team_name"] == team1]
     away_roster = roster[roster["team_name"] == team2]
 
-    st.caption("For each player, enter **Points** and **Assists** for this game (if any).")
+    # Load existing stats for this game to pre-fill values
+    stats_df = st.session_state.stats
+    existing_stats_game = stats_df[stats_df["game_id"] == selected_game_id]
 
-    with st.expander(f"{team1} Player Stats", expanded=True):
+    # Build lookup: (player_id, stat_type) -> value
+    existing_lookup = {}
+    for _, row in existing_stats_game.iterrows():
+        key = (row["player_id"], row["stat_type"])
+        existing_lookup[key] = row["value"]
+
+    st.caption("Enter stat totals for THIS game only. The app will handle season totals.")
+
+    # Player stat inputs
+    st.markdown("### Stats for " + team1)
+    with st.expander(f"{team1} Players", expanded=True):
         for _, p in home_roster.iterrows():
-            row_key = f"{temp_key}_home_{p['player_id']}"
-            col1, col2, col3 = st.columns([3, 1, 1])
-            with col1:
-                st.write(f"{p['first_name']} {p['last_name']} (Bunk {p['bunk']})")
-            with col2:
-                st.number_input(
-                    "Points",
-                    min_value=0,
-                    step=1,
-                    key=f"points_{row_key}"
-                )
-            with col3:
-                st.number_input(
-                    "Assists",
-                    min_value=0,
-                    step=1,
-                    key=f"assists_{row_key}"
-                )
+            player_key_base = f"{selected_game_id}_{team1}_{p['player_id']}"
+            st.markdown(f"**{p['first_name']} {p['last_name']} (Bunk {p['bunk']})**")
+            cols = st.columns(len(categories))
+            for (stat_code, stat_label), col in zip(categories, cols):
+                default_val = existing_lookup.get((p["player_id"], stat_code), 0)
+                with col:
+                    st.number_input(
+                        stat_label,
+                        min_value=0,
+                        step=1,
+                        value=int(default_val),
+                        key=f"{player_key_base}_{stat_code}",
+                    )
 
-    with st.expander(f"{team2} Player Stats", expanded=True):
+    st.markdown("### Stats for " + team2)
+    with st.expander(f"{team2} Players", expanded=True):
         for _, p in away_roster.iterrows():
-            row_key = f"{temp_key}_away_{p['player_id']}"
-            col1, col2, col3 = st.columns([3, 1, 1])
-            with col1:
-                st.write(f"{p['first_name']} {p['last_name']} (Bunk {p['bunk']})")
-            with col2:
-                st.number_input(
-                    "Points",
-                    min_value=0,
-                    step=1,
-                    key=f"points_{row_key}"
-                )
-            with col3:
-                st.number_input(
-                    "Assists",
-                    min_value=0,
-                    step=1,
-                    key=f"assists_{row_key}"
-                )
+            player_key_base = f"{selected_game_id}_{team2}_{p['player_id']}"
+            st.markdown(f"**{p['first_name']} {p['last_name']} (Bunk {p['bunk']})**")
+            cols = st.columns(len(categories))
+            for (stat_code, stat_label), col in zip(categories, cols):
+                default_val = existing_lookup.get((p["player_id"], stat_code), 0)
+                with col:
+                    st.number_input(
+                        stat_label,
+                        min_value=0,
+                        step=1,
+                        value=int(default_val),
+                        key=f"{player_key_base}_{stat_code}",
+                    )
 
-    if st.button("Save Game & Stats"):
-        # Create new game row
-        game_id = f"G{len(st.session_state.games) + 1}"
-        new_game = pd.DataFrame([{
-            "game_id": game_id,
-            "date": pd.to_datetime(game_date),
-            "team1": team1,
-            "team2": team2,
-            "score1": score1,
-            "score2": score2,
-        }])
+    if st.button("Save Stats for This Game"):
+        # Remove any existing stats rows for this game
+        st.session_state.stats = st.session_state.stats[
+            st.session_state.stats["game_id"] != selected_game_id
+        ]
 
-        st.session_state.games = pd.concat(
-            [st.session_state.games, new_game], ignore_index=True
-        )
-
-        # Collect stats from widgets
         new_stats_rows = []
 
-        # Team 1 stats
-        for _, p in home_roster.iterrows():
-            row_key = f"{temp_key}_home_{p['player_id']}"
-            pts = st.session_state.get(f"points_{row_key}", 0)
-            ast = st.session_state.get(f"assists_{row_key}", 0)
+        # Helper to collect values from the widgets
+        def collect_stats_for_team(team_name, team_roster):
+            for _, p in team_roster.iterrows():
+                player_key_base = f"{selected_game_id}_{team_name}_{p['player_id']}"
+                for (stat_code, stat_label) in categories:
+                    widget_key = f"{player_key_base}_{stat_code}"
+                    val = st.session_state.get(widget_key, 0)
+                    if val and int(val) > 0:
+                        new_stats_rows.append({
+                            "game_id": selected_game_id,
+                            "sport": game_sport,
+                            "team_name": team_name,
+                            "player_id": p["player_id"],
+                            "first_name": p["first_name"],
+                            "last_name": p["last_name"],
+                            "bunk": p["bunk"],
+                            "stat_type": stat_code,
+                            "value": int(val),
+                        })
 
-            if pts > 0:
-                new_stats_rows.append({
-                    "game_id": game_id,
-                    "team_name": team1,
-                    "player_id": p["player_id"],
-                    "first_name": p["first_name"],
-                    "last_name": p["last_name"],
-                    "bunk": p["bunk"],
-                    "stat_type": "points",
-                    "value": int(pts),
-                })
-            if ast > 0:
-                new_stats_rows.append({
-                    "game_id": game_id,
-                    "team_name": team1,
-                    "player_id": p["player_id"],
-                    "first_name": p["first_name"],
-                    "last_name": p["last_name"],
-                    "bunk": p["bunk"],
-                    "stat_type": "assists",
-                    "value": int(ast),
-                })
-
-        # Team 2 stats
-        for _, p in away_roster.iterrows():
-            row_key = f"{temp_key}_away_{p['player_id']}"
-            pts = st.session_state.get(f"points_{row_key}", 0)
-            ast = st.session_state.get(f"assists_{row_key}", 0)
-
-            if pts > 0:
-                new_stats_rows.append({
-                    "game_id": game_id,
-                    "team_name": team2,
-                    "player_id": p["player_id"],
-                    "first_name": p["first_name"],
-                    "last_name": p["last_name"],
-                    "bunk": p["bunk"],
-                    "stat_type": "points",
-                    "value": int(pts),
-                })
-            if ast > 0:
-                new_stats_rows.append({
-                    "game_id": game_id,
-                    "team_name": team2,
-                    "player_id": p["player_id"],
-                    "first_name": p["first_name"],
-                    "last_name": p["last_name"],
-                    "bunk": p["bunk"],
-                    "stat_type": "assists",
-                    "value": int(ast),
-                })
+        collect_stats_for_team(team1, home_roster)
+        collect_stats_for_team(team2, away_roster)
 
         if new_stats_rows:
             new_stats_df = pd.DataFrame(new_stats_rows)
@@ -350,14 +410,15 @@ def page_enter_scores_and_stats():
                 [st.session_state.stats, new_stats_df], ignore_index=True
             )
 
-        st.success(f"Saved game {game_id} and stats.")
+        st.success(f"Saved stats for game {selected_game_id}.")
 
     st.subheader("Games Entered So Far")
     if st.session_state.games.empty:
         st.info("No games yet.")
     else:
         display_games = st.session_state.games.copy()
-        display_games["date"] = display_games["date"].dt.date
+        if isinstance(display_games["date"].iloc[0], pd.Timestamp):
+            display_games["date"] = display_games["date"].dt.date
         st.dataframe(display_games, use_container_width=True)
 
 
@@ -417,11 +478,18 @@ def page_leaderboards():
         st.info("No stats yet. Enter some game stats first.")
         return
 
-    stat_type = st.selectbox("Stat Type", ["points", "assists"])
+    sports_with_stats = sorted(stats["sport"].unique().tolist())
+    selected_sport = st.selectbox("Sport", sports_with_stats)
 
-    lb = compute_leaderboard(stat_type)
+    # Figure out which stat codes are relevant for this sport
+    categories = SPORT_STAT_CATEGORIES.get(selected_sport, SPORT_STAT_CATEGORIES["Other"])
+    label_to_code = {label: code for code, label in categories}
+    stat_label = st.selectbox("Stat Category", list(label_to_code.keys()))
+    stat_code = label_to_code[stat_label]
+
+    lb = compute_leaderboard(selected_sport, stat_code)
     if lb.empty:
-        st.info(f"No {stat_type} recorded yet.")
+        st.info(f"No stats recorded yet for {selected_sport} – {stat_label}.")
         return
 
     display = lb.rename(columns={
@@ -429,10 +497,10 @@ def page_leaderboards():
         "last_name": "Last",
         "bunk": "Bunk",
         "team_name": "Team",
-        "value": stat_type.title(),
+        "value": stat_label,
     })
 
-    st.subheader(f"Top {len(display)} – {stat_type.title()}")
+    st.subheader(f"Top {len(display)} – {selected_sport} – {stat_label}")
     st.dataframe(display, use_container_width=True)
 
 
@@ -441,11 +509,11 @@ def page_leaderboards():
 # -----------------------------------------
 
 def main():
-    st.set_page_config(page_title="Crest League Manager (Simple)", layout="wide")
+    st.set_page_config(page_title="Crest League Manager (Stats by Sport)", layout="wide")
     init_state()
 
     st.sidebar.title("Crest League Manager")
-    st.sidebar.caption("Simple standings & stats for league play")
+    st.sidebar.caption("Standings & multi-sport stats")
 
     page = st.sidebar.radio(
         "Go to",
