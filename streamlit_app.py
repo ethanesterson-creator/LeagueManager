@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
+from pathlib import Path
 
 # -----------------------------------------
 # Stat Categories by Sport
 # -----------------------------------------
-
 # You can edit this dictionary to add/remove stats.
 # Keys = Sport names used when you create a game.
 # Values = list of (stat_code, nice_label).
@@ -20,6 +20,10 @@ SPORT_STAT_CATEGORIES = {
         ("soft_doubles", "Doubles"),
         ("soft_home_runs", "Home Runs"),
     ],
+    "Kickball": [
+        ("kick_runs", "Runs"),
+        ("kick_rbis", "RBIs"),
+    ],
     "Hockey": [
         ("hockey_goals", "Goals"),
         ("hockey_assists", "Assists"),
@@ -27,6 +31,14 @@ SPORT_STAT_CATEGORIES = {
     "Soccer": [
         ("soccer_goals", "Goals"),
         ("soccer_assists", "Assists"),
+    ],
+    "Euro": [
+        ("euro_goals", "Goals"),
+        ("euro_assists", "Assists"),
+    ],
+    "Speedball": [
+        ("speed_points", "Points"),
+        ("speed_assists", "Assists"),
     ],
     "Flag Football": [
         ("ff_touchdowns", "Touchdowns"),
@@ -42,6 +54,35 @@ SPORT_STAT_CATEGORIES = {
 
 DEFAULT_SPORTS = list(SPORT_STAT_CATEGORIES.keys())
 
+# Levels for A/B/C/D games
+LEVELS = ["A", "B", "C", "D"]
+
+# -----------------------------------------
+# League point values by sport/level
+# -----------------------------------------
+# This controls how many league points a WIN is worth.
+# Ties give each team half (rounded down).
+# You can edit these numbers to match real Bauercrest values.
+GAME_POINT_VALUES = {
+    "Basketball": {"A": 15, "B": 10, "C": 7, "D": 5},
+    "Softball": {"A": 15, "B": 10, "C": 7, "D": 5},
+    "Kickball": {"A": 10, "B": 7, "C": 5, "D": 3},
+    "Hockey": {"A": 15, "B": 10, "C": 7, "D": 5},
+    "Soccer": {"A": 15, "B": 10, "C": 7, "D": 5},
+    "Euro": {"A": 12, "B": 9, "C": 6, "D": 4},
+    "Speedball": {"A": 12, "B": 9, "C": 6, "D": 4},
+    "Flag Football": {"A": 15, "B": 10, "C": 7, "D": 5},
+    "Other": {"A": 10, "B": 7, "C": 5, "D": 3},
+}
+
+DEFAULT_GAME_POINTS = {"A": 10, "B": 7, "C": 5, "D": 3}
+
+
+def get_game_points(sport: str, level: str) -> int:
+    """How many league points a WIN is worth for this sport/level."""
+    sport_map = GAME_POINT_VALUES.get(sport, {})
+    return sport_map.get(level, DEFAULT_GAME_POINTS.get(level, 0))
+
 
 # -----------------------------------------
 # Helpers to create empty dataframes
@@ -49,7 +90,7 @@ DEFAULT_SPORTS = list(SPORT_STAT_CATEGORIES.keys())
 
 def new_games_df():
     return pd.DataFrame(columns=[
-        "game_id", "date", "sport", "team1", "team2", "score1", "score2"
+        "game_id", "date", "sport", "level", "team1", "team2", "score1", "score2"
     ])
 
 
@@ -76,19 +117,14 @@ def init_state():
         # Backwards compatibility: make sure all columns exist
         if "sport" not in st.session_state.games.columns:
             st.session_state.games["sport"] = "Other"
+        if "level" not in st.session_state.games.columns:
+            st.session_state.games["level"] = "A"
 
     if "stats" not in st.session_state:
         st.session_state.stats = new_stats_df()
     else:
         if "sport" not in st.session_state.stats.columns:
             st.session_state.stats["sport"] = "Other"
-
-    if "points_for_win" not in st.session_state:
-        st.session_state.points_for_win = 2
-    if "points_for_tie" not in st.session_state:
-        st.session_state.points_for_tie = 1
-    if "points_for_loss" not in st.session_state:
-        st.session_state.points_for_loss = 0
 
 
 # -----------------------------------------
@@ -97,11 +133,10 @@ def init_state():
 
 def compute_standings():
     """
-    Compute standings table from st.session_state.games
-    Using:
-    - 2 pts for win (default)
-    - 1 pt for tie
-    - 0 pts for loss
+    Compute standings table from st.session_state.games.
+
+    W/L/T based on scores.
+    Pts = league points using GAME_POINT_VALUES based on sport + level.
     """
     games = st.session_state.games
     teams = st.session_state.teams
@@ -117,8 +152,8 @@ def compute_standings():
     standings["w"] = 0
     standings["l"] = 0
     standings["t"] = 0
-    standings["pts"] = 0
-    standings["points_for"] = 0
+    standings["pts"] = 0          # league points based on sport/level
+    standings["points_for"] = 0   # sum of scores
     standings["points_against"] = 0
     standings["diff"] = 0
 
@@ -130,6 +165,9 @@ def compute_standings():
         team2 = g["team2"]
         s1 = int(g["score1"])
         s2 = int(g["score2"])
+        sport = g.get("sport", "Other")
+        level = g.get("level", "A")
+        win_points = get_game_points(sport, level)
 
         # games played, points for / against
         for team_name, scored, allowed in [(team1, s1, s2), (team2, s2, s1)]:
@@ -138,25 +176,24 @@ def compute_standings():
             standings.loc[idx, "points_for"] += scored
             standings.loc[idx, "points_against"] += allowed
 
-        # result
+        # result + league points
         if s1 > s2:
             # team1 win
             standings.loc[standings["team_name"] == team1, "w"] += 1
             standings.loc[standings["team_name"] == team2, "l"] += 1
-            standings.loc[standings["team_name"] == team1, "pts"] += st.session_state.points_for_win
-            standings.loc[standings["team_name"] == team2, "pts"] += st.session_state.points_for_loss
+            standings.loc[standings["team_name"] == team1, "pts"] += win_points
         elif s2 > s1:
             # team2 win
             standings.loc[standings["team_name"] == team2, "w"] += 1
             standings.loc[standings["team_name"] == team1, "l"] += 1
-            standings.loc[standings["team_name"] == team2, "pts"] += st.session_state.points_for_win
-            standings.loc[standings["team_name"] == team1, "pts"] += st.session_state.points_for_loss
+            standings.loc[standings["team_name"] == team2, "pts"] += win_points
         else:
-            # tie
+            # tie – split points in half (rounded down)
+            half = win_points // 2
             standings.loc[standings["team_name"] == team1, "t"] += 1
             standings.loc[standings["team_name"] == team2, "t"] += 1
-            standings.loc[standings["team_name"] == team1, "pts"] += st.session_state.points_for_tie
-            standings.loc[standings["team_name"] == team2, "pts"] += st.session_state.points_for_tie
+            standings.loc[standings["team_name"] == team1, "pts"] += half
+            standings.loc[standings["team_name"] == team2, "pts"] += half
 
     standings["diff"] = standings["points_for"] - standings["points_against"]
 
@@ -263,11 +300,13 @@ def page_enter_scores_and_stats():
     # -------------------------
     st.subheader("Add New Game")
 
-    col_date, col_sport = st.columns(2)
+    col_date, col_sport, col_level = st.columns(3)
     with col_date:
         game_date = st.date_input("Game Date", value=date.today())
     with col_sport:
         sport = st.selectbox("Sport", sports_list, index=0)
+    with col_level:
+        level = st.selectbox("Level (A/B/C/D)", LEVELS, index=0)
 
     col_team1, col_team2 = st.columns(2)
     with col_team1:
@@ -290,6 +329,7 @@ def page_enter_scores_and_stats():
                 "game_id": game_id,
                 "date": pd.to_datetime(game_date),
                 "sport": sport,
+                "level": level,
                 "team1": team1,
                 "team2": team2,
                 "score1": score1,
@@ -298,7 +338,11 @@ def page_enter_scores_and_stats():
             st.session_state.games = pd.concat(
                 [st.session_state.games, new_game], ignore_index=True
             )
-            st.success(f"Saved game {game_id}: {sport} – {team1} {score1}-{score2} {team2}")
+            pts = get_game_points(sport, level)
+            st.success(
+                f"Saved game {game_id}: {sport} ({level}) – {team1} {score1}-{score2} {team2} "
+                f"(win worth {pts} league pts)."
+            )
 
     st.markdown("---")
 
@@ -317,7 +361,7 @@ def page_enter_scores_and_stats():
     game_options = {}
     for _, g in games_sorted.iterrows():
         d = g["date"].date() if isinstance(g["date"], pd.Timestamp) else g["date"]
-        label = f"{g['game_id']} – {d} – {g['sport']} – {g['team1']} vs {g['team2']}"
+        label = f"{g['game_id']} – {d} – {g['sport']} ({g['level']}) – {g['team1']} vs {g['team2']}"
         game_options[label] = g["game_id"]
 
     selected_label = st.selectbox("Choose a game to enter stats for", list(game_options.keys()))
@@ -453,28 +497,13 @@ def page_standings():
         "w": "W",
         "l": "L",
         "t": "T",
-        "pts": "Pts",
-        "points_for": "PF",
+        "pts": "Pts",               # league points
+        "points_for": "PF",         # total scored
         "points_against": "PA",
         "diff": "Diff",
     })
 
     st.dataframe(display, use_container_width=True)
-
-    with st.expander("Points Settings"):
-        st.session_state.points_for_win = st.number_input(
-            "Points for Win", min_value=0, max_value=10,
-            value=st.session_state.points_for_win,
-        )
-        st.session_state.points_for_tie = st.number_input(
-            "Points for Tie", min_value=0, max_value=10,
-            value=st.session_state.points_for_tie,
-        )
-        st.session_state.points_for_loss = st.number_input(
-            "Points for Loss", min_value=0, max_value=10,
-            value=st.session_state.points_for_loss,
-        )
-        st.caption("Changing this will update standings next time they are calculated.")
 
 
 def page_leaderboards():
@@ -510,6 +539,12 @@ def page_leaderboards():
         "team_name": "Team",
         "value": stat_label,
     })
+
+    top_row = display.iloc[0]
+    st.success(
+        f"🏆 Current leader in {selected_sport} – {stat_label}: "
+        f"{top_row['First']} {top_row['Last']} ({top_row['Team']}), {stat_label}: {top_row[stat_label]}"
+    )
 
     st.subheader(f"Top {len(display)} – {selected_sport} – {stat_label}")
     st.dataframe(display, use_container_width=True)
@@ -550,7 +585,7 @@ def page_admin():
         ids = []
         for _, g in games_sorted.iterrows():
             d = g["date"].date() if isinstance(g["date"], pd.Timestamp) else g["date"]
-            label = f"{g['game_id']} – {d} – {g['sport']} – {g['team1']} vs {g['team2']}"
+            label = f"{g['game_id']} – {d} – {g['sport']} ({g['level']}) – {g['team1']} vs {g['team2']}"
             labels.append(label)
             ids.append(g["game_id"])
 
@@ -609,11 +644,16 @@ def page_admin():
 
 def main():
     st.set_page_config(page_title="Crest League Manager (Stats by Sport)", layout="wide")
+
+    # Bauercrest logo in sidebar if present
+    logo_path = Path("logo-header-2.png")  # change name if your logo file is different
+    if logo_path.exists():
+        st.sidebar.image(str(logo_path), use_column_width=True)
+
     init_state()
 
-    st.sidebar.image("logo-header-2.png", use_column_width=True)
     st.sidebar.title("Crest League Manager")
-    st.sidebar.caption("Standings & multi-sport stats")
+    st.sidebar.caption("Standings, stats, and weighted league points")
 
     page = st.sidebar.radio(
         "Go to",
