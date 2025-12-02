@@ -1,14 +1,11 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 # -----------------------------------------
 # Stat Categories by Sport
 # -----------------------------------------
-# You can edit this dictionary to add/remove stats.
-# Keys = Sport names used when you create a game.
-# Values = list of (stat_code, nice_label).
 SPORT_STAT_CATEGORIES = {
     "Basketball": [
         ("basket_points", "Points"),
@@ -45,7 +42,6 @@ SPORT_STAT_CATEGORIES = {
         ("ff_catches", "Catches"),
         ("ff_interceptions", "Interceptions"),
     ],
-    # Fallback / generic stats if you want simple stuff
     "Other": [
         ("points", "Points"),
         ("assists", "Assists"),
@@ -53,16 +49,11 @@ SPORT_STAT_CATEGORIES = {
 }
 
 DEFAULT_SPORTS = list(SPORT_STAT_CATEGORIES.keys())
-
-# Levels for A/B/C/D games
 LEVELS = ["A", "B", "C", "D"]
 
 # -----------------------------------------
 # League point values by sport/level
 # -----------------------------------------
-# This controls how many league points a WIN is worth.
-# Ties give each team half (rounded down).
-# You can edit these numbers to match real Bauercrest values.
 GAME_POINT_VALUES = {
     "Basketball": {"A": 15, "B": 10, "C": 7, "D": 5},
     "Softball": {"A": 15, "B": 10, "C": 7, "D": 5},
@@ -74,7 +65,6 @@ GAME_POINT_VALUES = {
     "Flag Football": {"A": 15, "B": 10, "C": 7, "D": 5},
     "Other": {"A": 10, "B": 7, "C": 5, "D": 3},
 }
-
 DEFAULT_GAME_POINTS = {"A": 10, "B": 7, "C": 5, "D": 3}
 
 
@@ -82,6 +72,17 @@ def get_game_points(sport: str, level: str) -> int:
     """How many league points a WIN is worth for this sport/level."""
     sport_map = GAME_POINT_VALUES.get(sport, {})
     return sport_map.get(level, DEFAULT_GAME_POINTS.get(level, 0))
+
+
+# -----------------------------------------
+# File paths (for shared data)
+# -----------------------------------------
+
+ROSTER_FILE = Path("roster.csv")
+TEAMS_FILE = Path("teams.csv")
+GAMES_FILE = Path("games.csv")
+STATS_FILE = Path("stats.csv")
+HIGHLIGHTS_FILE = Path("highlights.csv")
 
 
 # -----------------------------------------
@@ -101,30 +102,77 @@ def new_stats_df():
     ])
 
 
+def new_highlights_df():
+    return pd.DataFrame(columns=[
+        "highlight_id", "date", "title", "description", "video_url",
+        "sport", "level", "team1", "team2", "featured"
+    ])
+
+
+def load_csv(path: Path, columns):
+    if path.exists():
+        df = pd.read_csv(path)
+        # best-effort parse 'date' column if present
+        if "date" in df.columns:
+            try:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+            except Exception:
+                pass
+        return df
+    else:
+        return pd.DataFrame(columns=columns)
+
+
+def save_csv(path: Path, df: pd.DataFrame):
+    df.to_csv(path, index=False)
+
+
 # -----------------------------------------
 # Session State Initialization
 # -----------------------------------------
 
 def init_state():
+    # Roster
     if "roster" not in st.session_state:
-        st.session_state.roster = None  # roster DataFrame
-    if "teams" not in st.session_state:
-        st.session_state.teams = None   # DataFrame of unique teams
+        if ROSTER_FILE.exists():
+            df = pd.read_csv(ROSTER_FILE)
+            df.columns = (
+                df.columns
+                .astype(str)
+                .str.replace("\ufeff", "", regex=False)
+                .str.strip()
+                .str.lower()
+            )
+            st.session_state.roster = df
+        else:
+            st.session_state.roster = None
 
+    # Teams
+    if "teams" not in st.session_state:
+        if TEAMS_FILE.exists():
+            st.session_state.teams = pd.read_csv(TEAMS_FILE)
+        else:
+            st.session_state.teams = None
+
+    # Games
     if "games" not in st.session_state:
-        st.session_state.games = new_games_df()
-    else:
-        # Backwards compatibility: make sure all columns exist
+        st.session_state.games = load_csv(GAMES_FILE, new_games_df().columns)
         if "sport" not in st.session_state.games.columns:
             st.session_state.games["sport"] = "Other"
         if "level" not in st.session_state.games.columns:
             st.session_state.games["level"] = "A"
 
+    # Stats
     if "stats" not in st.session_state:
-        st.session_state.stats = new_stats_df()
-    else:
+        st.session_state.stats = load_csv(STATS_FILE, new_stats_df().columns)
         if "sport" not in st.session_state.stats.columns:
             st.session_state.stats["sport"] = "Other"
+
+    # Highlights
+    if "highlights" not in st.session_state:
+        st.session_state.highlights = load_csv(HIGHLIGHTS_FILE, new_highlights_df().columns)
+        if "featured" not in st.session_state.highlights.columns:
+            st.session_state.highlights["featured"] = False
 
 
 # -----------------------------------------
@@ -144,7 +192,6 @@ def compute_standings():
     if teams is None or teams.empty:
         return pd.DataFrame()
 
-    # Build initial standings for all teams
     standings = pd.DataFrame({
         "team_name": teams["team_name"].unique()
     })
@@ -152,8 +199,8 @@ def compute_standings():
     standings["w"] = 0
     standings["l"] = 0
     standings["t"] = 0
-    standings["pts"] = 0          # league points based on sport/level
-    standings["points_for"] = 0   # sum of scores
+    standings["pts"] = 0          # league points
+    standings["points_for"] = 0   # total scored
     standings["points_against"] = 0
     standings["diff"] = 0
 
@@ -178,17 +225,14 @@ def compute_standings():
 
         # result + league points
         if s1 > s2:
-            # team1 win
             standings.loc[standings["team_name"] == team1, "w"] += 1
             standings.loc[standings["team_name"] == team2, "l"] += 1
             standings.loc[standings["team_name"] == team1, "pts"] += win_points
         elif s2 > s1:
-            # team2 win
             standings.loc[standings["team_name"] == team2, "w"] += 1
             standings.loc[standings["team_name"] == team1, "l"] += 1
             standings.loc[standings["team_name"] == team2, "pts"] += win_points
         else:
-            # tie – split points in half (rounded down)
             half = win_points // 2
             standings.loc[standings["team_name"] == team1, "t"] += 1
             standings.loc[standings["team_name"] == team2, "t"] += 1
@@ -207,8 +251,7 @@ def compute_standings():
 
 def compute_leaderboard(sport: str, stat_type: str):
     """
-    Aggregates stats by player for a given sport and stat_type
-    (e.g. sport="Basketball", stat_type="basket_points").
+    Aggregates stats by player for a given sport and stat_type.
     """
     stats = st.session_state.stats
     if stats.empty:
@@ -258,24 +301,34 @@ def page_setup():
     if file is not None:
         try:
             df = pd.read_csv(file)
+            # Clean headers
+            df.columns = (
+                df.columns
+                .astype(str)
+                .str.replace("\ufeff", "", regex=False)
+                .str.strip()
+                .str.lower()
+            )
         except Exception as e:
             st.error(f"Could not read CSV: {e}")
             return
 
         required_cols = {"player_id", "first_name", "last_name", "team_name", "bunk"}
         if not required_cols.issubset(df.columns):
-            st.error(f"CSV must contain columns: {', '.join(required_cols)}")
+            st.error(
+                "CSV must contain columns: player_id, first_name, last_name, team_name, bunk. "
+                f"Current columns are: {list(df.columns)}"
+            )
             return
 
-        if df["team_name"].nunique() != 4:
-            st.warning(
-                f"CSV currently has {df['team_name'].nunique()} unique team_name values. "
-                "You probably want exactly 4 league teams."
-            )
-
         st.session_state.roster = df
-        st.session_state.teams = df[["team_name"]].drop_duplicates().reset_index(drop=True)
-        st.success("Roster loaded successfully!")
+        teams_df = df[["team_name"]].drop_duplicates().reset_index(drop=True)
+        st.session_state.teams = teams_df
+
+        df.to_csv(ROSTER_FILE, index=False)
+        teams_df.to_csv(TEAMS_FILE, index=False)
+
+        st.success("Roster loaded and saved successfully!")
 
     if st.session_state.roster is not None:
         st.subheader("Current Roster")
@@ -327,7 +380,7 @@ def page_enter_scores_and_stats():
             game_id = f"G{len(st.session_state.games) + 1}"
             new_game = pd.DataFrame([{
                 "game_id": game_id,
-                "date": pd.to_datetime(game_date),
+                "date": pd.to_datetime(game_date).date(),
                 "sport": sport,
                 "level": level,
                 "team1": team1,
@@ -338,6 +391,8 @@ def page_enter_scores_and_stats():
             st.session_state.games = pd.concat(
                 [st.session_state.games, new_game], ignore_index=True
             )
+            save_csv(GAMES_FILE, st.session_state.games)
+
             pts = get_game_points(sport, level)
             st.success(
                 f"Saved game {game_id}: {sport} ({level}) – {team1} {score1}-{score2} {team2} "
@@ -356,11 +411,10 @@ def page_enter_scores_and_stats():
         st.info("No games yet. Add a game above first.")
         return
 
-    # Sort games by date
     games_sorted = games.sort_values("date")
     game_options = {}
     for _, g in games_sorted.iterrows():
-        d = g["date"].date() if isinstance(g["date"], pd.Timestamp) else g["date"]
+        d = g["date"]
         label = f"{g['game_id']} – {d} – {g['sport']} ({g['level']}) – {g['team1']} vs {g['team2']}"
         game_options[label] = g["game_id"]
 
@@ -374,18 +428,15 @@ def page_enter_scores_and_stats():
 
     st.caption(f"Game: {selected_game_id} • {game_sport} • {team1} vs {team2}")
 
-    # Get stat categories for this sport
     categories = SPORT_STAT_CATEGORIES.get(game_sport, SPORT_STAT_CATEGORIES["Other"])
 
     roster = st.session_state.roster
     home_roster = roster[roster["team_name"] == team1]
     away_roster = roster[roster["team_name"] == team2]
 
-    # Load existing stats for this game to pre-fill values
     stats_df = st.session_state.stats
     existing_stats_game = stats_df[stats_df["game_id"] == selected_game_id]
 
-    # Build lookup: (player_id, stat_type) -> value
     existing_lookup = {}
     for _, row in existing_stats_game.iterrows():
         key = (row["player_id"], row["stat_type"])
@@ -436,7 +487,6 @@ def page_enter_scores_and_stats():
 
         new_stats_rows = []
 
-        # Helper to collect values from the widgets
         def collect_stats_for_team(team_name, team_roster):
             for _, p in team_roster.iterrows():
                 player_key_base = f"{selected_game_id}_{team_name}_{p['player_id']}"
@@ -464,6 +514,7 @@ def page_enter_scores_and_stats():
             st.session_state.stats = pd.concat(
                 [st.session_state.stats, new_stats_df], ignore_index=True
             )
+            save_csv(STATS_FILE, st.session_state.stats)
 
         st.success(f"Saved stats for game {selected_game_id}.")
 
@@ -472,8 +523,6 @@ def page_enter_scores_and_stats():
         st.info("No games yet.")
     else:
         display_games = st.session_state.games.copy()
-        if not display_games.empty and isinstance(display_games["date"].iloc[0], pd.Timestamp):
-            display_games["date"] = display_games["date"].dt.date
         st.dataframe(display_games, use_container_width=True)
 
 
@@ -521,7 +570,6 @@ def page_leaderboards():
     sports_with_stats = sorted(stats["sport"].unique().tolist())
     selected_sport = st.selectbox("Sport", sports_with_stats)
 
-    # Figure out which stat codes are relevant for this sport
     categories = SPORT_STAT_CATEGORIES.get(selected_sport, SPORT_STAT_CATEGORIES["Other"])
     label_to_code = {label: code for code, label in categories}
     stat_label = st.selectbox("Stat Category", list(label_to_code.keys()))
@@ -550,30 +598,211 @@ def page_leaderboards():
     st.dataframe(display, use_container_width=True)
 
 
+def page_highlights():
+    st.header("Highlights & Videos")
+
+    if st.session_state.roster is None or st.session_state.teams is None:
+        st.info("You can still add highlights even if no roster is loaded, but teams list will be empty.")
+        teams_list = []
+    else:
+        teams_list = st.session_state.teams["team_name"].tolist()
+
+    st.write("Add links to YouTube / Vimeo / hosted highlight videos for the mess hall monitor.")
+
+    col_form, col_list = st.columns([2, 3])
+
+    # ---- Add highlight form ----
+    with col_form:
+        st.subheader("Add New Highlight")
+        with st.form("add_highlight_form", clear_on_submit=True):
+            h_date = st.date_input("Date", value=date.today())
+            title = st.text_input("Title (e.g., 'A Basketball: Red vs Blue')")
+            video_url = st.text_input("Video URL")
+            description = st.text_area("Description (optional)", height=80)
+
+            sport = st.selectbox("Sport", DEFAULT_SPORTS + ["Other"])
+            level = st.selectbox("Level", LEVELS + ["N/A"], index=0)
+
+            col_t1, col_t2 = st.columns(2)
+            with col_t1:
+                team1 = st.selectbox("Team 1 (optional)", [""] + teams_list)
+            with col_t2:
+                team2 = st.selectbox("Team 2 (optional)", [""] + teams_list)
+
+            featured = st.checkbox("Feature this on today's display board", value=True)
+
+            submitted = st.form_submit_button("Save Highlight")
+
+            if submitted:
+                if not title.strip():
+                    st.error("Please enter a title.")
+                elif not video_url.strip():
+                    st.error("Please enter a video URL.")
+                else:
+                    hl_df = st.session_state.highlights
+                    if hl_df.empty:
+                        next_id = 1
+                    else:
+                        next_id = int(hl_df["highlight_id"].max()) + 1
+
+                    new_row = {
+                        "highlight_id": next_id,
+                        "date": h_date,
+                        "title": title.strip(),
+                        "description": description.strip(),
+                        "video_url": video_url.strip(),
+                        "sport": sport,
+                        "level": level,
+                        "team1": team1 or "",
+                        "team2": team2 or "",
+                        "featured": bool(featured),
+                    }
+
+                    st.session_state.highlights = pd.concat(
+                        [hl_df, pd.DataFrame([new_row])], ignore_index=True
+                    )
+                    save_csv(HIGHLIGHTS_FILE, st.session_state.highlights)
+                    st.success("Highlight saved!")
+
+    # ---- Highlight list & preview ----
+    with col_list:
+        st.subheader("Existing Highlights")
+
+        hl_df = st.session_state.highlights
+        if hl_df.empty:
+            st.info("No highlights yet.")
+        else:
+            display = hl_df.copy()
+            st.dataframe(
+                display[["highlight_id", "date", "title", "sport", "level", "featured"]],
+                use_container_width=True,
+            )
+
+            st.markdown("---")
+            st.subheader("Preview a Highlight")
+            ids = display["highlight_id"].tolist()
+            id_to_title = {int(r["highlight_id"]): r["title"] for _, r in display.iterrows()}
+            if ids:
+                selected_id = st.selectbox(
+                    "Choose a highlight to preview",
+                    ids,
+                    format_func=lambda x: f"{x} – {id_to_title.get(x, '')}"
+                )
+                row = display[display["highlight_id"] == selected_id].iloc[0]
+                st.markdown(f"**{row['title']}**")
+                if isinstance(row["date"], (datetime, date)):
+                    st.caption(str(row["date"]))
+                if row.get("description"):
+                    st.write(row["description"])
+                st.video(row["video_url"])
+
+
+def page_display_board():
+    st.header("Mess Hall Display – Standings, Leaders & Highlights")
+
+    standings = compute_standings()
+    stats = st.session_state.stats
+    hl_df = st.session_state.highlights
+
+    col1, col2 = st.columns([2, 1])
+
+    # ---- Standings ----
+    with col1:
+        st.subheader("Team Standings")
+        if standings.empty:
+            st.info("No games yet.")
+        else:
+            display = standings.copy()
+            display.insert(0, "Rank", range(1, len(display) + 1))
+            display = display.rename(columns={
+                "team_name": "Team",
+                "gp": "GP",
+                "w": "W",
+                "l": "L",
+                "t": "T",
+                "pts": "Pts",
+                "points_for": "PF",
+                "points_against": "PA",
+                "diff": "Diff",
+            })
+            st.dataframe(display, use_container_width=True)
+
+    # ---- Stat Leaders ----
+    with col2:
+        st.subheader("Stat Leaders")
+        if stats.empty:
+            st.info("No stats yet.")
+        else:
+            sports_with_stats = sorted(stats["sport"].unique().tolist())
+            selected_sport = st.selectbox("Sport", sports_with_stats, key="display_sport")
+            categories = SPORT_STAT_CATEGORIES.get(selected_sport, SPORT_STAT_CATEGORIES["Other"])
+            label_to_code = {label: code for code, label in categories}
+            stat_label = st.selectbox("Stat", list(label_to_code.keys()), key="display_stat")
+            stat_code = label_to_code[stat_label]
+
+            lb = compute_leaderboard(selected_sport, stat_code)
+            if lb.empty:
+                st.info(f"No stats yet for {selected_sport} – {stat_label}.")
+            else:
+                top_n = lb.head(10)
+                display_lb = top_n.rename(columns={
+                    "first_name": "First",
+                    "last_name": "Last",
+                    "bunk": "Bunk",
+                    "team_name": "Team",
+                    "value": stat_label,
+                })
+                st.dataframe(display_lb, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Today's Highlights")
+
+    if hl_df.empty:
+        st.info("No highlights yet.")
+    else:
+        today_str = date.today().isoformat()
+
+        def is_today(val):
+            if isinstance(val, str):
+                return val.startswith(today_str)
+            if isinstance(val, (datetime, date)):
+                return val == date.today()
+            return False
+
+        today_highlights = hl_df[hl_df["date"].apply(is_today) | hl_df["featured"].astype(bool)]
+        if today_highlights.empty:
+            st.info("No highlights marked for today yet.")
+        else:
+            for _, row in today_highlights.iterrows():
+                st.markdown(f"**{row['title']}** ({row['sport']} {row['level']})")
+                if row.get("description"):
+                    st.write(row["description"])
+                st.video(row["video_url"])
+                st.markdown("---")
+
+
 def page_admin():
     st.header("Admin / Clear Data")
 
-    st.write("Use this page to clear out test rosters, games, and stats.")
-
-    # Quick status
     roster_rows = 0 if st.session_state.roster is None else len(st.session_state.roster)
     team_rows = 0 if st.session_state.teams is None else len(st.session_state.teams)
     game_rows = len(st.session_state.games)
     stat_rows = len(st.session_state.stats)
+    hl_rows = len(st.session_state.highlights)
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Roster rows", roster_rows)
         st.metric("Teams", team_rows)
     with col2:
         st.metric("Games", game_rows)
         st.metric("Stat entries", stat_rows)
+    with col3:
+        st.metric("Highlights", hl_rows)
 
     st.markdown("---")
 
-    # -------------------------
     # Delete selected games
-    # -------------------------
     st.subheader("Delete Selected Games (and Their Stats)")
 
     games = st.session_state.games
@@ -584,7 +813,7 @@ def page_admin():
         labels = []
         ids = []
         for _, g in games_sorted.iterrows():
-            d = g["date"].date() if isinstance(g["date"], pd.Timestamp) else g["date"]
+            d = g["date"]
             label = f"{g['game_id']} – {d} – {g['sport']} ({g['level']}) – {g['team1']} vs {g['team2']}"
             labels.append(label)
             ids.append(g["game_id"])
@@ -594,40 +823,46 @@ def page_admin():
         selected_ids = [label_to_id[l] for l in selected_labels]
 
         if selected_ids and st.button("Delete Selected Games"):
-            # Remove selected games
             st.session_state.games = st.session_state.games[
                 ~st.session_state.games["game_id"].isin(selected_ids)
             ]
-            # Remove their stats
             st.session_state.stats = st.session_state.stats[
                 ~st.session_state.stats["game_id"].isin(selected_ids)
             ]
+            save_csv(GAMES_FILE, st.session_state.games)
+            save_csv(STATS_FILE, st.session_state.stats)
             st.success(f"Deleted {len(selected_ids)} game(s) and their stats.")
 
     st.markdown("---")
 
-    # -------------------------
     # Delete ALL games & stats
-    # -------------------------
-    st.subheader("Delete ALL Games & Stats (keep roster)")
-
-    st.warning("This will remove every game and every stat entry, but keep your roster and teams.")
+    st.subheader("Delete ALL Games & Stats (keep roster & highlights)")
+    st.warning("This will remove every game and every stat entry, but keep your roster, teams, and highlights.")
     confirm_all_games = st.checkbox("I understand, delete ALL games & stats")
     if confirm_all_games and st.button("Delete ALL Games & Stats"):
         st.session_state.games = new_games_df()
         st.session_state.stats = new_stats_df()
+        save_csv(GAMES_FILE, st.session_state.games)
+        save_csv(STATS_FILE, st.session_state.stats)
         st.success("All games and stats have been deleted.")
 
     st.markdown("---")
 
-    # -------------------------
-    # Delete EVERYTHING
-    # -------------------------
-    st.subheader("Delete EVERYTHING (Roster, Teams, Games, Stats)")
+    # Delete ALL highlights
+    st.subheader("Delete ALL Highlights")
+    confirm_hl = st.checkbox("I understand, delete ALL highlights")
+    if confirm_hl and st.button("Delete ALL Highlights"):
+        st.session_state.highlights = new_highlights_df()
+        save_csv(HIGHLIGHTS_FILE, st.session_state.highlights)
+        st.success("All highlights deleted.")
 
+    st.markdown("---")
+
+    # Full reset
+    st.subheader("Delete EVERYTHING (Roster, Teams, Games, Stats, Highlights)")
     st.error(
         "This will completely reset the app. You will need to upload a new roster "
-        "and re-enter all games and stats."
+        "and re-enter all games, stats, and highlights."
     )
     confirm_everything = st.checkbox("I REALLY understand, delete EVERYTHING")
     if confirm_everything and st.button("Full Reset: Clear All Data"):
@@ -635,6 +870,12 @@ def page_admin():
         st.session_state.teams = None
         st.session_state.games = new_games_df()
         st.session_state.stats = new_stats_df()
+        st.session_state.highlights = new_highlights_df()
+
+        for path in [ROSTER_FILE, TEAMS_FILE, GAMES_FILE, STATS_FILE, HIGHLIGHTS_FILE]:
+            if path.exists():
+                path.unlink()
+
         st.success("All data cleared. Go to Setup to upload a fresh roster.")
 
 
@@ -643,21 +884,28 @@ def page_admin():
 # -----------------------------------------
 
 def main():
-    st.set_page_config(page_title="Crest League Manager (Stats by Sport)", layout="wide")
+    st.set_page_config(page_title="Crest League Manager", layout="wide")
+    init_state()
 
     # Bauercrest logo in sidebar if present
-    logo_path = Path("logo-header-2.png")  # change name if your logo file is different
+    logo_path = Path("logo-header-2.png")  # change if your logo file name is different
     if logo_path.exists():
         st.sidebar.image(str(logo_path), use_column_width=True)
 
-    init_state()
-
     st.sidebar.title("Crest League Manager")
-    st.sidebar.caption("Standings, stats, and weighted league points")
+    st.sidebar.caption("Standings, stats, highlights & display board")
 
     page = st.sidebar.radio(
         "Go to",
-        ["Setup", "Enter Scores & Stats", "Standings", "Leaderboards", "Admin / Clear Data"],
+        [
+            "Setup",
+            "Enter Scores & Stats",
+            "Standings",
+            "Leaderboards",
+            "Highlights",
+            "Display Board",
+            "Admin / Clear Data",
+        ],
     )
 
     if page == "Setup":
@@ -668,6 +916,10 @@ def main():
         page_standings()
     elif page == "Leaderboards":
         page_leaderboards()
+    elif page == "Highlights":
+        page_highlights()
+    elif page == "Display Board":
+        page_display_board()
     elif page == "Admin / Clear Data":
         page_admin()
 
