@@ -83,6 +83,7 @@ TEAMS_FILE = Path("teams.csv")
 GAMES_FILE = Path("games.csv")
 STATS_FILE = Path("stats.csv")
 HIGHLIGHTS_FILE = Path("highlights.csv")
+VIDEOS_DIR = Path("highlight_videos")
 
 
 # -----------------------------------------
@@ -104,7 +105,7 @@ def new_stats_df():
 
 def new_highlights_df():
     return pd.DataFrame(columns=[
-        "highlight_id", "date", "title", "description", "video_url",
+        "highlight_id", "date", "title", "description", "video_path",
         "sport", "level", "team1", "team2", "featured"
     ])
 
@@ -112,7 +113,6 @@ def new_highlights_df():
 def load_csv(path: Path, columns):
     if path.exists():
         df = pd.read_csv(path)
-        # best-effort parse 'date' column if present
         if "date" in df.columns:
             try:
                 df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
@@ -132,6 +132,9 @@ def save_csv(path: Path, df: pd.DataFrame):
 # -----------------------------------------
 
 def init_state():
+    # Make sure video folder exists
+    VIDEOS_DIR.mkdir(exist_ok=True)
+
     # Roster
     if "roster" not in st.session_state:
         if ROSTER_FILE.exists():
@@ -173,6 +176,8 @@ def init_state():
         st.session_state.highlights = load_csv(HIGHLIGHTS_FILE, new_highlights_df().columns)
         if "featured" not in st.session_state.highlights.columns:
             st.session_state.highlights["featured"] = False
+        if "video_path" not in st.session_state.highlights.columns:
+            st.session_state.highlights["video_path"] = ""
 
 
 # -----------------------------------------
@@ -180,12 +185,6 @@ def init_state():
 # -----------------------------------------
 
 def compute_standings():
-    """
-    Compute standings table from st.session_state.games.
-
-    W/L/T based on scores.
-    Pts = league points using GAME_POINT_VALUES based on sport + level.
-    """
     games = st.session_state.games
     teams = st.session_state.teams
 
@@ -199,8 +198,8 @@ def compute_standings():
     standings["w"] = 0
     standings["l"] = 0
     standings["t"] = 0
-    standings["pts"] = 0          # league points
-    standings["points_for"] = 0   # total scored
+    standings["pts"] = 0
+    standings["points_for"] = 0
     standings["points_against"] = 0
     standings["diff"] = 0
 
@@ -216,14 +215,12 @@ def compute_standings():
         level = g.get("level", "A")
         win_points = get_game_points(sport, level)
 
-        # games played, points for / against
         for team_name, scored, allowed in [(team1, s1, s2), (team2, s2, s1)]:
             idx = standings["team_name"] == team_name
             standings.loc[idx, "gp"] += 1
             standings.loc[idx, "points_for"] += scored
             standings.loc[idx, "points_against"] += allowed
 
-        # result + league points
         if s1 > s2:
             standings.loc[standings["team_name"] == team1, "w"] += 1
             standings.loc[standings["team_name"] == team2, "l"] += 1
@@ -250,9 +247,6 @@ def compute_standings():
 
 
 def compute_leaderboard(sport: str, stat_type: str):
-    """
-    Aggregates stats by player for a given sport and stat_type.
-    """
     stats = st.session_state.stats
     if stats.empty:
         return pd.DataFrame()
@@ -301,7 +295,6 @@ def page_setup():
     if file is not None:
         try:
             df = pd.read_csv(file)
-            # Clean headers
             df.columns = (
                 df.columns
                 .astype(str)
@@ -546,8 +539,8 @@ def page_standings():
         "w": "W",
         "l": "L",
         "t": "T",
-        "pts": "Pts",               # league points
-        "points_for": "PF",         # total scored
+        "pts": "Pts",
+        "points_for": "PF",
         "points_against": "PA",
         "diff": "Diff",
     })
@@ -607,7 +600,7 @@ def page_highlights():
     else:
         teams_list = st.session_state.teams["team_name"].tolist()
 
-    st.write("Add links to YouTube / Vimeo / hosted highlight videos for the mess hall monitor.")
+    st.write("Upload highlight videos from that day for the mess hall monitor.")
 
     col_form, col_list = st.columns([2, 3])
 
@@ -617,7 +610,10 @@ def page_highlights():
         with st.form("add_highlight_form", clear_on_submit=True):
             h_date = st.date_input("Date", value=date.today())
             title = st.text_input("Title (e.g., 'A Basketball: Red vs Blue')")
-            video_url = st.text_input("Video URL")
+            video_file = st.file_uploader(
+                "Upload highlight video",
+                type=["mp4", "mov", "avi", "mkv"],
+            )
             description = st.text_area("Description (optional)", height=80)
 
             sport = st.selectbox("Sport", DEFAULT_SPORTS + ["Other"])
@@ -636,8 +632,8 @@ def page_highlights():
             if submitted:
                 if not title.strip():
                     st.error("Please enter a title.")
-                elif not video_url.strip():
-                    st.error("Please enter a video URL.")
+                elif video_file is None:
+                    st.error("Please upload a video file.")
                 else:
                     hl_df = st.session_state.highlights
                     if hl_df.empty:
@@ -645,12 +641,18 @@ def page_highlights():
                     else:
                         next_id = int(hl_df["highlight_id"].max()) + 1
 
+                    # Save video file to VIDEOS_DIR
+                    safe_name = f"highlight_{next_id}_{video_file.name}"
+                    video_path = VIDEOS_DIR / safe_name
+                    with open(video_path, "wb") as f:
+                        f.write(video_file.getbuffer())
+
                     new_row = {
                         "highlight_id": next_id,
                         "date": h_date,
                         "title": title.strip(),
                         "description": description.strip(),
-                        "video_url": video_url.strip(),
+                        "video_path": str(video_path),
                         "sport": sport,
                         "level": level,
                         "team1": team1 or "",
@@ -692,93 +694,149 @@ def page_highlights():
                 st.markdown(f"**{row['title']}**")
                 if isinstance(row["date"], (datetime, date)):
                     st.caption(str(row["date"]))
+                elif isinstance(row["date"], str):
+                    st.caption(row["date"])
                 if row.get("description"):
                     st.write(row["description"])
-                st.video(row["video_url"])
+                vp = row.get("video_path", "")
+                if vp and Path(vp).exists():
+                    st.video(vp)
+                else:
+                    st.warning("Video file not found. It may have been moved or deleted.")
 
 
 def page_display_board():
-    st.header("Mess Hall Display – Standings, Leaders & Highlights")
+    st.header("Mess Hall Display")
 
     standings = compute_standings()
     stats = st.session_state.stats
     hl_df = st.session_state.highlights
 
-    col1, col2 = st.columns([2, 1])
+    mode = st.radio(
+        "Display mode",
+        [
+            "Standings & One Stat Leaderboard",
+            "Highlights Reel (Today/Featured)",
+            "All Stat Leaders (All Sports)",
+        ],
+    )
 
-    # ---- Standings ----
-    with col1:
-        st.subheader("Team Standings")
-        if standings.empty:
-            st.info("No games yet.")
+    # ---- Mode 1: Standings + one stat leaderboard ----
+    if mode == "Standings & One Stat Leaderboard":
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            st.subheader("Team Standings")
+            if standings.empty:
+                st.info("No games yet.")
+            else:
+                display = standings.copy()
+                display.insert(0, "Rank", range(1, len(display) + 1))
+                display = display.rename(columns={
+                    "team_name": "Team",
+                    "gp": "GP",
+                    "w": "W",
+                    "l": "L",
+                    "t": "T",
+                    "pts": "Pts",
+                    "points_for": "PF",
+                    "points_against": "PA",
+                    "diff": "Diff",
+                })
+                st.dataframe(display, use_container_width=True)
+
+        with col2:
+            st.subheader("Stat Leaders")
+            if stats.empty:
+                st.info("No stats yet.")
+            else:
+                sports_with_stats = sorted(stats["sport"].unique().tolist())
+                selected_sport = st.selectbox("Sport", sports_with_stats, key="display_sport")
+                categories = SPORT_STAT_CATEGORIES.get(selected_sport, SPORT_STAT_CATEGORIES["Other"])
+                label_to_code = {label: code for code, label in categories}
+                stat_label = st.selectbox("Stat", list(label_to_code.keys()), key="display_stat")
+                stat_code = label_to_code[stat_label]
+
+                lb = compute_leaderboard(selected_sport, stat_code)
+                if lb.empty:
+                    st.info(f"No stats yet for {selected_sport} – {stat_label}.")
+                else:
+                    top_n = lb.head(10)
+                    display_lb = top_n.rename(columns={
+                        "first_name": "First",
+                        "last_name": "Last",
+                        "bunk": "Bunk",
+                        "team_name": "Team",
+                        "value": stat_label,
+                    })
+                    st.dataframe(display_lb, use_container_width=True)
+
+        st.markdown("---")
+        st.caption("Tip: Put your browser in full-screen mode for the mess hall TV.")
+
+    # ---- Mode 2: Highlights-only reel ----
+    elif mode == "Highlights Reel (Today/Featured)":
+        st.subheader("Highlights Reel")
+
+        if hl_df.empty:
+            st.info("No highlights yet.")
         else:
-            display = standings.copy()
-            display.insert(0, "Rank", range(1, len(display) + 1))
-            display = display.rename(columns={
-                "team_name": "Team",
-                "gp": "GP",
-                "w": "W",
-                "l": "L",
-                "t": "T",
-                "pts": "Pts",
-                "points_for": "PF",
-                "points_against": "PA",
-                "diff": "Diff",
-            })
-            st.dataframe(display, use_container_width=True)
+            today_str = date.today().isoformat()
 
-    # ---- Stat Leaders ----
-    with col2:
-        st.subheader("Stat Leaders")
+            def is_today(val):
+                if isinstance(val, str):
+                    return val.startswith(today_str)
+                if isinstance(val, (datetime, date)):
+                    return val == date.today()
+                return False
+
+            today_highlights = hl_df[hl_df["date"].apply(is_today) | hl_df["featured"].astype(bool)]
+            if today_highlights.empty:
+                st.info("No highlights marked for today yet.")
+            else:
+                st.caption("Scroll or fullscreen – videos are stacked, ready to play back-to-back.")
+                for _, row in today_highlights.sort_values("date").iterrows():
+                    st.markdown(f"**{row['title']}** ({row['sport']} {row['level']})")
+                    if row.get("description"):
+                        st.write(row["description"])
+                    vp = row.get("video_path", "")
+                    if vp and Path(vp).exists():
+                        st.video(vp)
+                    else:
+                        st.warning("Video file not found.")
+                    st.markdown("---")
+
+    # ---- Mode 3: All stat leaders for all sports ----
+    elif mode == "All Stat Leaders (All Sports)":
+        st.subheader("Stat Leaders – All Sports")
+
         if stats.empty:
             st.info("No stats yet.")
-        else:
-            sports_with_stats = sorted(stats["sport"].unique().tolist())
-            selected_sport = st.selectbox("Sport", sports_with_stats, key="display_sport")
-            categories = SPORT_STAT_CATEGORIES.get(selected_sport, SPORT_STAT_CATEGORIES["Other"])
-            label_to_code = {label: code for code, label in categories}
-            stat_label = st.selectbox("Stat", list(label_to_code.keys()), key="display_stat")
-            stat_code = label_to_code[stat_label]
+            return
 
-            lb = compute_leaderboard(selected_sport, stat_code)
+        sports_with_stats = sorted(stats["sport"].unique().tolist())
+
+        for sport in sports_with_stats:
+            st.markdown(f"### {sport}")
+            categories = SPORT_STAT_CATEGORIES.get(sport, SPORT_STAT_CATEGORIES["Other"])
+
+            # Just show leaders for the FIRST stat category per sport (main stat)
+            main_code, main_label = categories[0]
+
+            lb = compute_leaderboard(sport, main_code)
             if lb.empty:
-                st.info(f"No stats yet for {selected_sport} – {stat_label}.")
-            else:
-                top_n = lb.head(10)
-                display_lb = top_n.rename(columns={
-                    "first_name": "First",
-                    "last_name": "Last",
-                    "bunk": "Bunk",
-                    "team_name": "Team",
-                    "value": stat_label,
-                })
-                st.dataframe(display_lb, use_container_width=True)
+                st.info(f"No stats yet for {sport}.")
+                continue
 
-    st.markdown("---")
-    st.subheader("Today's Highlights")
-
-    if hl_df.empty:
-        st.info("No highlights yet.")
-    else:
-        today_str = date.today().isoformat()
-
-        def is_today(val):
-            if isinstance(val, str):
-                return val.startswith(today_str)
-            if isinstance(val, (datetime, date)):
-                return val == date.today()
-            return False
-
-        today_highlights = hl_df[hl_df["date"].apply(is_today) | hl_df["featured"].astype(bool)]
-        if today_highlights.empty:
-            st.info("No highlights marked for today yet.")
-        else:
-            for _, row in today_highlights.iterrows():
-                st.markdown(f"**{row['title']}** ({row['sport']} {row['level']})")
-                if row.get("description"):
-                    st.write(row["description"])
-                st.video(row["video_url"])
-                st.markdown("---")
+            top_n = lb.head(10)
+            display_lb = top_n.rename(columns={
+                "first_name": "First",
+                "last_name": "Last",
+                "bunk": "Bunk",
+                "team_name": "Team",
+                "value": main_label,
+            })
+            st.dataframe(display_lb, use_container_width=True)
 
 
 def page_admin():
@@ -875,6 +933,12 @@ def page_admin():
         for path in [ROSTER_FILE, TEAMS_FILE, GAMES_FILE, STATS_FILE, HIGHLIGHTS_FILE]:
             if path.exists():
                 path.unlink()
+
+        # Optionally clear videos too
+        if VIDEOS_DIR.exists():
+            for p in VIDEOS_DIR.iterdir():
+                if p.is_file():
+                    p.unlink()
 
         st.success("All data cleared. Go to Setup to upload a fresh roster.")
 
