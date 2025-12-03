@@ -13,6 +13,7 @@ LEAGUES = [
     {"name": "Senior League", "slug": "senior"},
 ]
 
+
 def get_league_by_name(name: str):
     for lg in LEAGUES:
         if lg["name"] == name:
@@ -93,7 +94,7 @@ def get_game_points(sport: str, level: str) -> int:
 
 
 # -----------------------------------------
-# Paths – these will be set per league
+# Paths – will be set per league
 # -----------------------------------------
 
 ROSTER_FILE = Path("roster.csv")
@@ -106,8 +107,8 @@ VIDEOS_DIR = Path("highlight_videos")
 
 def set_paths_for_league(slug: str):
     """
-    Set global paths so that all data is stored per-league.
-    soph_roster.csv, junior_games.csv, etc.
+    Set global paths so that all data is stored per league.
+    e.g., soph_roster.csv, junior_games.csv, etc.
     """
     global ROSTER_FILE, TEAMS_FILE, GAMES_FILE, STATS_FILE, HIGHLIGHTS_FILE, VIDEOS_DIR
     ROSTER_FILE = Path(f"{slug}_roster.csv")
@@ -164,52 +165,53 @@ def save_csv(path: Path, df: pd.DataFrame):
 # -----------------------------------------
 
 def init_state():
-    # Make sure video folder exists
+    """
+    Always load this league's data fresh from its files.
+
+    This fixes the bug where switching between Soph/Junior/Senior
+    kept showing the last league's roster and stats.
+    """
+    # Make sure this league's video folder exists
     VIDEOS_DIR.mkdir(exist_ok=True)
 
-    # Roster
-    if "roster" not in st.session_state:
-        if ROSTER_FILE.exists():
-            df = pd.read_csv(ROSTER_FILE)
-            df.columns = (
-                df.columns
-                .astype(str)
-                .str.replace("\ufeff", "", regex=False)
-                .str.strip()
-                .str.lower()
-            )
-            st.session_state.roster = df
-        else:
-            st.session_state.roster = None
+    # ----- Roster -----
+    if ROSTER_FILE.exists():
+        df = pd.read_csv(ROSTER_FILE)
+        df.columns = (
+            df.columns
+            .astype(str)
+            .str.replace("\ufeff", "", regex=False)
+            .str.strip()
+            .str.lower()
+        )
+        st.session_state.roster = df
+    else:
+        st.session_state.roster = None
 
-    # Teams
-    if "teams" not in st.session_state:
-        if TEAMS_FILE.exists():
-            st.session_state.teams = pd.read_csv(TEAMS_FILE)
-        else:
-            st.session_state.teams = None
+    # ----- Teams -----
+    if TEAMS_FILE.exists():
+        st.session_state.teams = pd.read_csv(TEAMS_FILE)
+    else:
+        st.session_state.teams = None
 
-    # Games
-    if "games" not in st.session_state:
-        st.session_state.games = load_csv(GAMES_FILE, new_games_df().columns)
-        if "sport" not in st.session_state.games.columns:
-            st.session_state.games["sport"] = "Other"
-        if "level" not in st.session_state.games.columns:
-            st.session_state.games["level"] = "A"
+    # ----- Games -----
+    st.session_state.games = load_csv(GAMES_FILE, new_games_df().columns)
+    if "sport" not in st.session_state.games.columns:
+        st.session_state.games["sport"] = "Other"
+    if "level" not in st.session_state.games.columns:
+        st.session_state.games["level"] = "A"
 
-    # Stats
-    if "stats" not in st.session_state:
-        st.session_state.stats = load_csv(STATS_FILE, new_stats_df().columns)
-        if "sport" not in st.session_state.stats.columns:
-            st.session_state.stats["sport"] = "Other"
+    # ----- Stats -----
+    st.session_state.stats = load_csv(STATS_FILE, new_stats_df().columns)
+    if "sport" not in st.session_state.stats.columns:
+        st.session_state.stats["sport"] = "Other"
 
-    # Highlights
-    if "highlights" not in st.session_state:
-        st.session_state.highlights = load_csv(HIGHLIGHTS_FILE, new_highlights_df().columns)
-        if "featured" not in st.session_state.highlights.columns:
-            st.session_state.highlights["featured"] = False
-        if "video_path" not in st.session_state.highlights.columns:
-            st.session_state.highlights["video_path"] = ""
+    # ----- Highlights -----
+    st.session_state.highlights = load_csv(HIGHLIGHTS_FILE, new_highlights_df().columns)
+    if "featured" not in st.session_state.highlights.columns:
+        st.session_state.highlights["featured"] = False
+    if "video_path" not in st.session_state.highlights.columns:
+        st.session_state.highlights["video_path"] = ""
 
 
 # -----------------------------------------
@@ -298,7 +300,7 @@ def compute_leaderboard(sport: str, stat_type: str):
 
 
 # -----------------------------------------
-# Pages (all operate within current league)
+# Pages (per league)
 # -----------------------------------------
 
 def page_setup():
@@ -990,7 +992,7 @@ def main():
 
     st.sidebar.caption(f"Managing data for: **{selected_league_name}**")
 
-    # Initialize state for this league
+    # Load this league's data into session_state
     init_state()
 
     page = st.sidebar.radio(
