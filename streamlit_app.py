@@ -4,8 +4,26 @@ from datetime import date, datetime
 from pathlib import Path
 
 # -----------------------------------------
+# Leagues
+# -----------------------------------------
+
+LEAGUES = [
+    {"name": "Sophomore League", "slug": "soph"},
+    {"name": "Junior League", "slug": "junior"},
+    {"name": "Senior League", "slug": "senior"},
+]
+
+def get_league_by_name(name: str):
+    for lg in LEAGUES:
+        if lg["name"] == name:
+            return lg
+    return LEAGUES[-1]  # default to last (Senior)
+
+
+# -----------------------------------------
 # Stat Categories by Sport
 # -----------------------------------------
+
 SPORT_STAT_CATEGORIES = {
     "Basketball": [
         ("basket_points", "Points"),
@@ -54,6 +72,7 @@ LEVELS = ["A", "B", "C", "D"]
 # -----------------------------------------
 # League point values by sport/level
 # -----------------------------------------
+
 GAME_POINT_VALUES = {
     "Basketball": {"A": 15, "B": 10, "C": 7, "D": 5},
     "Softball": {"A": 15, "B": 10, "C": 7, "D": 5},
@@ -69,13 +88,12 @@ DEFAULT_GAME_POINTS = {"A": 10, "B": 7, "C": 5, "D": 3}
 
 
 def get_game_points(sport: str, level: str) -> int:
-    """How many league points a WIN is worth for this sport/level."""
     sport_map = GAME_POINT_VALUES.get(sport, {})
     return sport_map.get(level, DEFAULT_GAME_POINTS.get(level, 0))
 
 
 # -----------------------------------------
-# File paths (for shared data)
+# Paths – these will be set per league
 # -----------------------------------------
 
 ROSTER_FILE = Path("roster.csv")
@@ -84,6 +102,20 @@ GAMES_FILE = Path("games.csv")
 STATS_FILE = Path("stats.csv")
 HIGHLIGHTS_FILE = Path("highlights.csv")
 VIDEOS_DIR = Path("highlight_videos")
+
+
+def set_paths_for_league(slug: str):
+    """
+    Set global paths so that all data is stored per-league.
+    soph_roster.csv, junior_games.csv, etc.
+    """
+    global ROSTER_FILE, TEAMS_FILE, GAMES_FILE, STATS_FILE, HIGHLIGHTS_FILE, VIDEOS_DIR
+    ROSTER_FILE = Path(f"{slug}_roster.csv")
+    TEAMS_FILE = Path(f"{slug}_teams.csv")
+    GAMES_FILE = Path(f"{slug}_games.csv")
+    STATS_FILE = Path(f"{slug}_stats.csv")
+    HIGHLIGHTS_FILE = Path(f"{slug}_highlights.csv")
+    VIDEOS_DIR = Path(f"{slug}_highlight_videos")
 
 
 # -----------------------------------------
@@ -128,7 +160,7 @@ def save_csv(path: Path, df: pd.DataFrame):
 
 
 # -----------------------------------------
-# Session State Initialization
+# Session State Initialization (per league)
 # -----------------------------------------
 
 def init_state():
@@ -266,7 +298,7 @@ def compute_leaderboard(sport: str, stat_type: str):
 
 
 # -----------------------------------------
-# Pages
+# Pages (all operate within current league)
 # -----------------------------------------
 
 def page_setup():
@@ -341,9 +373,7 @@ def page_enter_scores_and_stats():
     teams_list = st.session_state.teams["team_name"].tolist()
     sports_list = DEFAULT_SPORTS
 
-    # -------------------------
-    # Section A: Add a new game
-    # -------------------------
+    # Add new game
     st.subheader("Add New Game")
 
     col_date, col_sport, col_level = st.columns(3)
@@ -394,9 +424,7 @@ def page_enter_scores_and_stats():
 
     st.markdown("---")
 
-    # ------------------------------------------
-    # Section B: Enter / Edit stats for a game
-    # ------------------------------------------
+    # Enter / edit stats
     st.subheader("Enter / Edit Stats for an Existing Game")
 
     games = st.session_state.games
@@ -437,7 +465,7 @@ def page_enter_scores_and_stats():
 
     st.caption("Enter stat totals for THIS game only. The app will handle season totals.")
 
-    # Player stat inputs
+    # Stats for team1
     st.markdown("### Stats for " + team1)
     with st.expander(f"{team1} Players", expanded=True):
         for _, p in home_roster.iterrows():
@@ -455,6 +483,7 @@ def page_enter_scores_and_stats():
                         key=f"{player_key_base}_{stat_code}",
                     )
 
+    # Stats for team2
     st.markdown("### Stats for " + team2)
     with st.expander(f"{team2} Players", expanded=True):
         for _, p in away_roster.iterrows():
@@ -473,7 +502,6 @@ def page_enter_scores_and_stats():
                     )
 
     if st.button("Save Stats for This Game"):
-        # Remove any existing stats rows for this game
         st.session_state.stats = st.session_state.stats[
             st.session_state.stats["game_id"] != selected_game_id
         ]
@@ -483,7 +511,7 @@ def page_enter_scores_and_stats():
         def collect_stats_for_team(team_name, team_roster):
             for _, p in team_roster.iterrows():
                 player_key_base = f"{selected_game_id}_{team_name}_{p['player_id']}"
-                for (stat_code, stat_label) in categories:
+                for (stat_code, _) in categories:
                     widget_key = f"{player_key_base}_{stat_code}"
                     val = st.session_state.get(widget_key, 0)
                     if val and int(val) > 0:
@@ -515,8 +543,7 @@ def page_enter_scores_and_stats():
     if st.session_state.games.empty:
         st.info("No games yet.")
     else:
-        display_games = st.session_state.games.copy()
-        st.dataframe(display_games, use_container_width=True)
+        st.dataframe(st.session_state.games, use_container_width=True)
 
 
 def page_standings():
@@ -604,7 +631,7 @@ def page_highlights():
 
     col_form, col_list = st.columns([2, 3])
 
-    # ---- Add highlight form ----
+    # Add highlight form
     with col_form:
         st.subheader("Add New Highlight")
         with st.form("add_highlight_form", clear_on_submit=True):
@@ -636,12 +663,9 @@ def page_highlights():
                     st.error("Please upload a video file.")
                 else:
                     hl_df = st.session_state.highlights
-                    if hl_df.empty:
-                        next_id = 1
-                    else:
-                        next_id = int(hl_df["highlight_id"].max()) + 1
+                    next_id = 1 if hl_df.empty else int(hl_df["highlight_id"].max()) + 1
 
-                    # Save video file to VIDEOS_DIR
+                    VIDEOS_DIR.mkdir(exist_ok=True)
                     safe_name = f"highlight_{next_id}_{video_file.name}"
                     video_path = VIDEOS_DIR / safe_name
                     with open(video_path, "wb") as f:
@@ -666,7 +690,7 @@ def page_highlights():
                     save_csv(HIGHLIGHTS_FILE, st.session_state.highlights)
                     st.success("Highlight saved!")
 
-    # ---- Highlight list & preview ----
+    # Highlight list & preview
     with col_list:
         st.subheader("Existing Highlights")
 
@@ -705,8 +729,8 @@ def page_highlights():
                     st.warning("Video file not found. It may have been moved or deleted.")
 
 
-def page_display_board():
-    st.header("Mess Hall Display")
+def page_display_board(current_league_name: str):
+    st.header(f"Mess Hall Display – {current_league_name}")
 
     standings = compute_standings()
     stats = st.session_state.stats
@@ -721,7 +745,7 @@ def page_display_board():
         ],
     )
 
-    # ---- Mode 1: Standings + one stat leaderboard ----
+    # Mode 1: Standings + one stat
     if mode == "Standings & One Stat Leaderboard":
         col1, col2 = st.columns([2, 1])
 
@@ -774,7 +798,7 @@ def page_display_board():
         st.markdown("---")
         st.caption("Tip: Put your browser in full-screen mode for the mess hall TV.")
 
-    # ---- Mode 2: Highlights-only reel ----
+    # Mode 2: Highlights reel
     elif mode == "Highlights Reel (Today/Featured)":
         st.subheader("Highlights Reel")
 
@@ -806,7 +830,7 @@ def page_display_board():
                         st.warning("Video file not found.")
                     st.markdown("---")
 
-    # ---- Mode 3: All stat leaders for all sports ----
+    # Mode 3: All stat leaders all sports
     elif mode == "All Stat Leaders (All Sports)":
         st.subheader("Stat Leaders – All Sports")
 
@@ -819,8 +843,6 @@ def page_display_board():
         for sport in sports_with_stats:
             st.markdown(f"### {sport}")
             categories = SPORT_STAT_CATEGORIES.get(sport, SPORT_STAT_CATEGORIES["Other"])
-
-            # Just show leaders for the FIRST stat category per sport (main stat)
             main_code, main_label = categories[0]
 
             lb = compute_leaderboard(sport, main_code)
@@ -840,7 +862,7 @@ def page_display_board():
 
 
 def page_admin():
-    st.header("Admin / Clear Data")
+    st.header("Admin / Clear Data (This League Only)")
 
     roster_rows = 0 if st.session_state.roster is None else len(st.session_state.roster)
     team_rows = 0 if st.session_state.teams is None else len(st.session_state.teams)
@@ -895,7 +917,7 @@ def page_admin():
 
     # Delete ALL games & stats
     st.subheader("Delete ALL Games & Stats (keep roster & highlights)")
-    st.warning("This will remove every game and every stat entry, but keep your roster, teams, and highlights.")
+    st.warning("This will remove every game and every stat entry for this league, but keep your roster, teams, and highlights.")
     confirm_all_games = st.checkbox("I understand, delete ALL games & stats")
     if confirm_all_games and st.button("Delete ALL Games & Stats"):
         st.session_state.games = new_games_df()
@@ -907,7 +929,7 @@ def page_admin():
     st.markdown("---")
 
     # Delete ALL highlights
-    st.subheader("Delete ALL Highlights")
+    st.subheader("Delete ALL Highlights (this league)")
     confirm_hl = st.checkbox("I understand, delete ALL highlights")
     if confirm_hl and st.button("Delete ALL Highlights"):
         st.session_state.highlights = new_highlights_df()
@@ -916,31 +938,32 @@ def page_admin():
 
     st.markdown("---")
 
-    # Full reset
-    st.subheader("Delete EVERYTHING (Roster, Teams, Games, Stats, Highlights)")
+    # Full reset for this league
+    st.subheader("Delete EVERYTHING for This League (Roster, Teams, Games, Stats, Highlights)")
     st.error(
-        "This will completely reset the app. You will need to upload a new roster "
-        "and re-enter all games, stats, and highlights."
+        "This will completely reset THIS league only. "
+        "You will need to upload a new roster and re-enter all games, stats, and highlights."
     )
-    confirm_everything = st.checkbox("I REALLY understand, delete EVERYTHING")
-    if confirm_everything and st.button("Full Reset: Clear All Data"):
+    confirm_everything = st.checkbox("I REALLY understand, delete EVERYTHING for this league")
+    if confirm_everything and st.button("Full Reset: Clear All Data for This League"):
         st.session_state.roster = None
         st.session_state.teams = None
         st.session_state.games = new_games_df()
         st.session_state.stats = new_stats_df()
         st.session_state.highlights = new_highlights_df()
 
+        # Delete league-specific files
         for path in [ROSTER_FILE, TEAMS_FILE, GAMES_FILE, STATS_FILE, HIGHLIGHTS_FILE]:
             if path.exists():
                 path.unlink()
 
-        # Optionally clear videos too
+        # Clear videos for this league
         if VIDEOS_DIR.exists():
             for p in VIDEOS_DIR.iterdir():
                 if p.is_file():
                     p.unlink()
 
-        st.success("All data cleared. Go to Setup to upload a fresh roster.")
+        st.success("All data cleared for this league. Go to Setup to upload a fresh roster.")
 
 
 # -----------------------------------------
@@ -949,15 +972,26 @@ def page_admin():
 
 def main():
     st.set_page_config(page_title="Crest League Manager", layout="wide")
-    init_state()
+
+    # League selector in sidebar (default to Senior League)
+    st.sidebar.title("Crest League Manager")
+    league_names = [lg["name"] for lg in LEAGUES]
+    default_index = next(i for i, lg in enumerate(LEAGUES) if lg["slug"] == "senior")
+    selected_league_name = st.sidebar.selectbox("League", league_names, index=default_index)
+    league = get_league_by_name(selected_league_name)
+
+    # Set file paths for this league
+    set_paths_for_league(league["slug"])
 
     # Bauercrest logo in sidebar if present
-    logo_path = Path("logo-header-2.png")  # change if your logo file name is different
+    logo_path = Path("logo-header-2.png")
     if logo_path.exists():
         st.sidebar.image(str(logo_path), use_column_width=True)
 
-    st.sidebar.title("Crest League Manager")
-    st.sidebar.caption("Standings, stats, highlights & display board")
+    st.sidebar.caption(f"Managing data for: **{selected_league_name}**")
+
+    # Initialize state for this league
+    init_state()
 
     page = st.sidebar.radio(
         "Go to",
@@ -983,7 +1017,7 @@ def main():
     elif page == "Highlights":
         page_highlights()
     elif page == "Display Board":
-        page_display_board()
+        page_display_board(selected_league_name)
     elif page == "Admin / Clear Data":
         page_admin()
 
