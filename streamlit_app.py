@@ -21,6 +21,13 @@ def get_league_by_name(name: str):
     return LEAGUES[-1]  # default to Senior if something weird happens
 
 
+def get_league_by_slug(slug: str):
+    for lg in LEAGUES:
+        if lg["slug"] == slug:
+            return lg
+    return LEAGUES[-1]
+
+
 # -----------------------------------------
 # Stat Categories by Sport
 # -----------------------------------------
@@ -165,7 +172,7 @@ def load_league_data(paths: dict):
     else:
         roster = None
 
-    # Teams: prefer deriving from roster; fall back to separate file if needed
+    # Teams: derive from roster if possible
     if roster is not None and "team_name" in roster.columns:
         teams = roster[["team_name"]].drop_duplicates().reset_index(drop=True)
     elif paths["teams"].exists():
@@ -277,7 +284,7 @@ def compute_leaderboard(stats: pd.DataFrame, sport: str, stat_type: str):
 
 
 # -----------------------------------------
-# Pages – all take league_slug & league_name
+# League-specific pages (Setup, Scores, Standings, Leaderboards, Highlights)
 # -----------------------------------------
 
 def page_setup(league_slug: str, league_name: str):
@@ -379,11 +386,21 @@ def page_enter_scores_and_stats(league_slug: str, league_name: str):
     else:
         col_score1, col_score2 = st.columns(2)
         with col_score1:
-            score1 = st.number_input(f"{team1} Score", min_value=0, step=1, value=0,
-                                     key=f"{league_slug}_score1")
+            score1 = st.number_input(
+                f"{team1} Score",
+                min_value=0,
+                step=1,
+                value=0,
+                key=f"{league_slug}_score1",
+            )
         with col_score2:
-            score2 = st.number_input(f"{team2} Score", min_value=0, step=1, value=0,
-                                     key=f"{league_slug}_score2")
+            score2 = st.number_input(
+                f"{team2} Score",
+                min_value=0,
+                step=1,
+                value=0,
+                key=f"{league_slug}_score2",
+            )
 
         if st.button("Save Game", key=f"{league_slug}_save_game"):
             game_id = f"G{len(games) + 1}"
@@ -718,181 +735,248 @@ def page_highlights(league_slug: str, league_name: str):
                     st.warning("Video file not found. It may have been moved or deleted.")
 
 
-def page_display_board(league_slug: str, league_name: str):
+# -----------------------------------------
+# GLOBAL DISPLAY BOARD
+# -----------------------------------------
+
+def render_display_view(display_type: str, league_slug: str):
+    """Render the clean content-only view for the TV."""
+    league = get_league_by_slug(league_slug)
+    league_name = league["name"]
     paths = get_paths(league_slug)
     roster, teams, games, stats, highlights = load_league_data(paths)
 
-    st.header(f"Mess Hall Display – {league_name}")
+    if display_type == "Standings":
+        if teams is None:
+            st.info(f"No roster/teams yet for {league_name}.")
+            return
+        standings = compute_standings(games, teams)
+        if standings.empty:
+            st.info("No games yet.")
+            return
+        display = standings.copy()
+        display.insert(0, "Rank", range(1, len(display) + 1))
+        display = display.rename(columns={
+            "team_name": "Team",
+            "gp": "GP",
+            "w": "W",
+            "l": "L",
+            "t": "T",
+            "pts": "Pts",
+            "points_for": "PF",
+            "points_against": "PA",
+            "diff": "Diff",
+        })
+        st.markdown(f"## {league_name} – Standings")
+        st.dataframe(display, use_container_width=True)
 
-    mode = st.radio(
-        "Display mode",
-        [
-            "Standings & One Stat Leaderboard",
-            "Highlights Reel (Today/Featured)",
-            "All Stat Leaders (All Sports)",
-        ],
-        key=f"{league_slug}_display_mode",
-    )
-
-    # Mode 1: Standings + one stat
-    if mode == "Standings & One Stat Leaderboard":
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            st.subheader("Team Standings")
-            if teams is None:
-                st.info("No roster/teams yet for this league.")
-            else:
-                standings = compute_standings(games, teams)
-                if standings.empty:
-                    st.info("No games yet.")
-                else:
-                    display = standings.copy()
-                    display.insert(0, "Rank", range(1, len(display) + 1))
-                    display = display.rename(columns={
-                        "team_name": "Team",
-                        "gp": "GP",
-                        "w": "W",
-                        "l": "L",
-                        "t": "T",
-                        "pts": "Pts",
-                        "points_for": "PF",
-                        "points_against": "PA",
-                        "diff": "Diff",
-                    })
-                    st.dataframe(display, use_container_width=True)
-
-        with col2:
-            st.subheader("Stat Leaders")
-            if stats.empty:
-                st.info("No stats yet.")
-            else:
-                sports_with_stats = sorted(stats["sport"].unique().tolist())
-                selected_sport = st.selectbox(
-                    "Sport",
-                    sports_with_stats,
-                    key=f"{league_slug}_display_sport",
-                )
-                categories = SPORT_STAT_CATEGORIES.get(selected_sport, SPORT_STAT_CATEGORIES["Other"])
-                label_to_code = {label: code for code, label in categories}
-                stat_label = st.selectbox(
-                    "Stat",
-                    list(label_to_code.keys()),
-                    key=f"{league_slug}_display_stat",
-                )
-                stat_code = label_to_code[stat_label]
-
-                lb = compute_leaderboard(stats, selected_sport, stat_code)
-                if lb.empty:
-                    st.info(f"No stats yet for {selected_sport} – {stat_label}.")
-                else:
-                    top_n = lb.head(10)
-                    display_lb = top_n.rename(columns={
-                        "first_name": "First",
-                        "last_name": "Last",
-                        "bunk": "Bunk",
-                        "team_name": "Team",
-                        "value": stat_label,
-                    })
-                    st.dataframe(display_lb, use_container_width=True)
-
-        st.markdown("---")
-        st.caption("Tip: Put your browser in full-screen mode for the mess hall TV.")
-
-    # Mode 2: Highlights reel
-    elif mode == "Highlights Reel (Today/Featured)":
-        st.subheader("Highlights Reel")
-
-        if highlights.empty:
-            st.info("No highlights yet.")
-        else:
-            today_str = date.today().isoformat()
-
-            def is_today(val):
-                if isinstance(val, str):
-                    return val.startswith(today_str)
-                if isinstance(val, (datetime, date)):
-                    return val == date.today()
-                return False
-
-            today_highlights = highlights[
-                highlights["date"].apply(is_today) | highlights["featured"].astype(bool)
-            ]
-            if today_highlights.empty:
-                st.info("No highlights marked for today yet.")
-            else:
-                st.caption("Scroll or fullscreen – videos are stacked, ready to play back-to-back.")
-                for _, row in today_highlights.sort_values("date").iterrows():
-                    st.markdown(f"**{row['title']}** ({row['sport']} {row['level']})")
-                    if row.get("description"):
-                        st.write(row["description"])
-                    vp = row.get("video_path", "")
-                    if vp and Path(vp).exists():
-                        st.video(vp)
-                    else:
-                        st.warning("Video file not found.")
-                    st.markdown("---")
-
-    # Mode 3: All stat leaders all sports
-    elif mode == "All Stat Leaders (All Sports)":
-        st.subheader("Stat Leaders – All Sports")
-
+    elif display_type == "Stat Leaders":
         if stats.empty:
             st.info("No stats yet.")
             return
 
-        sports_with_stats = sorted(stats["sport"].unique().tolist())
+        sport = st.session_state.get("display_stat_sport")
+        stat_code = st.session_state.get("display_stat_code")
+        stat_label = st.session_state.get("display_stat_label")
 
-        for sport in sports_with_stats:
-            st.markdown(f"### {sport}")
-            categories = SPORT_STAT_CATEGORIES.get(sport, SPORT_STAT_CATEGORIES["Other"])
-            main_code, main_label = categories[0]
+        if not sport or not stat_code or not stat_label:
+            st.info("Use Control Panel to choose sport and stat first.")
+            return
 
-            lb = compute_leaderboard(stats, sport, main_code)
-            if lb.empty:
-                st.info(f"No stats yet for {sport}.")
-                continue
+        lb = compute_leaderboard(stats, sport, stat_code)
+        if lb.empty:
+            st.info(f"No stats yet for {sport} – {stat_label}.")
+            return
 
-            top_n = lb.head(10)
-            display_lb = top_n.rename(columns={
-                "first_name": "First",
-                "last_name": "Last",
-                "bunk": "Bunk",
-                "team_name": "Team",
-                "value": main_label,
-            })
-            st.dataframe(display_lb, use_container_width=True)
+        top_n = lb.head(10)
+        display_lb = top_n.rename(columns={
+            "first_name": "First",
+            "last_name": "Last",
+            "bunk": "Bunk",
+            "team_name": "Team",
+            "value": stat_label,
+        })
+        st.markdown(f"## {league_name} – {sport} – {stat_label} Leaders")
+        st.dataframe(display_lb, use_container_width=True)
+
+    elif display_type == "Highlights Reel":
+        if highlights.empty:
+            st.info("No highlights yet.")
+            return
+
+        today_str = date.today().isoformat()
+
+        def is_today(val):
+            if isinstance(val, str):
+                return val.startswith(today_str)
+            if isinstance(val, (datetime, date)):
+                return val == date.today()
+            return False
+
+        today_highlights = highlights[
+            highlights["date"].apply(is_today) | highlights["featured"].astype(bool)
+        ]
+        if today_highlights.empty:
+            st.info("No highlights marked for today yet.")
+            return
+
+        st.markdown(f"## {league_name} – Highlights Reel")
+        for _, row in today_highlights.sort_values("date").iterrows():
+            st.markdown(f"**{row['title']}** ({row['sport']} {row['level']})")
+            if row.get("description"):
+                st.write(row["description"])
+            vp = row.get("video_path", "")
+            if vp and Path(vp).exists():
+                st.video(vp)
+            else:
+                st.warning("Video file not found.")
+            st.markdown("---")
 
 
-def page_admin(league_slug: str, league_name: str):
-    paths = get_paths(league_slug)
-    roster, teams, games, stats, highlights = load_league_data(paths)
+def page_display_board_global():
+    st.header("Mess Hall Display Board")
 
-    st.header(f"{league_name} – Admin / Clear Data")
+    # Defaults for display config
+    if "display_league_slug" not in st.session_state:
+        st.session_state.display_league_slug = "senior"
+    if "display_type" not in st.session_state:
+        st.session_state.display_type = "Standings"
 
-    roster_rows = 0 if roster is None else len(roster)
-    team_rows = 0 if teams is None else len(teams)
-    game_rows = len(games)
-    stat_rows = len(stats)
-    hl_rows = len(highlights)
+    view_mode = st.radio(
+        "View Mode",
+        ["Control Panel", "Screen View"],
+        key="display_view_mode",
+    )
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Roster rows", roster_rows)
-        st.metric("Teams", team_rows)
-    with col2:
-        st.metric("Games", game_rows)
-        st.metric("Stat entries", stat_rows)
-    with col3:
-        st.metric("Highlights", hl_rows)
+    if view_mode == "Control Panel":
+        st.subheader("Control Panel (set up what the TV should show)")
+
+        # League
+        league_slugs = [lg["slug"] for lg in LEAGUES]
+        league_names = [lg["name"] for lg in LEAGUES]
+        current_slug = st.session_state.display_league_slug
+        default_index = league_slugs.index(current_slug) if current_slug in league_slugs else 0
+
+        league_name_choice = st.selectbox(
+            "Which league do you want to display?",
+            league_names,
+            index=default_index,
+        )
+        selected_league = get_league_by_name(league_name_choice)
+        st.session_state.display_league_slug = selected_league["slug"]
+
+        # Display type
+        display_type = st.selectbox(
+            "What do you want to show on the screen?",
+            ["Standings", "Stat Leaders", "Highlights Reel"],
+            index=["Standings", "Stat Leaders", "Highlights Reel"].index(
+                st.session_state.display_type
+            ),
+        )
+        st.session_state.display_type = display_type
+
+        # Extra options for Stat Leaders
+        if display_type == "Stat Leaders":
+            paths = get_paths(selected_league["slug"])
+            roster, teams, games, stats, highlights = load_league_data(paths)
+            if stats.empty:
+                st.info("No stats yet in this league.")
+            else:
+                sports_with_stats = sorted(stats["sport"].unique().tolist())
+                sport = st.selectbox(
+                    "Sport",
+                    sports_with_stats,
+                    key="display_stat_sport_select",
+                )
+                categories = SPORT_STAT_CATEGORIES.get(sport, SPORT_STAT_CATEGORIES["Other"])
+                label_to_code = {label: code for code, label in categories}
+                stat_label = st.selectbox(
+                    "Stat",
+                    list(label_to_code.keys()),
+                    key="display_stat_label_select",
+                )
+                stat_code = label_to_code[stat_label]
+
+                # Save config to session_state
+                st.session_state.display_stat_sport = sport
+                st.session_state.display_stat_code = stat_code
+                st.session_state.display_stat_label = stat_label
+
+        st.markdown("---")
+        st.subheader("Preview")
+        render_display_view(st.session_state.display_type, st.session_state.display_league_slug)
+        st.caption("When you're happy, switch 'View Mode' to **Screen View** and put the browser in full-screen on the TV.")
+
+    else:  # Screen View
+        # Only the content, no controls
+        render_display_view(st.session_state.display_type, st.session_state.display_league_slug)
+
+
+# -----------------------------------------
+# GLOBAL ADMIN / CLEAR PAGE
+# -----------------------------------------
+
+def page_admin_global():
+    st.header("Admin / Clear Data – All Leagues")
+
+    # Summary table
+    summary_rows = []
+    for lg in LEAGUES:
+        slug = lg["slug"]
+        name = lg["name"]
+        paths = get_paths(slug)
+        roster, teams, games, stats, highlights = load_league_data(paths)
+        summary_rows.append({
+            "League": name,
+            "Roster rows": 0 if roster is None else len(roster),
+            "Teams": 0 if teams is None else len(teams),
+            "Games": len(games),
+            "Stat entries": len(stats),
+            "Highlights": len(highlights),
+        })
+    st.subheader("Current Data Overview")
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
 
     st.markdown("---")
 
-    # Delete selected games
-    st.subheader("Delete Selected Games (and Their Stats)")
+    # ----- Clear rosters -----
+    st.subheader("Clear Rosters")
+
+    roster_target = st.selectbox(
+        "Which rosters do you want to clear?",
+        ["All Leagues"] + [lg["name"] for lg in LEAGUES],
+        key="admin_roster_target",
+    )
+    if st.button("Clear Selected Roster(s)", key="admin_clear_rosters_btn"):
+        if roster_target == "All Leagues":
+            targets = LEAGUES
+        else:
+            targets = [lg for lg in LEAGUES if lg["name"] == roster_target]
+
+        for lg in targets:
+            paths = get_paths(lg["slug"])
+            for p in [paths["roster"], paths["teams"]]:
+                if p.exists():
+                    p.unlink()
+
+        st.success(f"Cleared roster(s) for: {', '.join([t['name'] for t in targets])}")
+
+    st.markdown("---")
+
+    # ----- Delete specific games for one league -----
+    st.subheader("Delete Specific Games (and Their Stats)")
+
+    league_for_games = st.selectbox(
+        "Choose league",
+        [lg["name"] for lg in LEAGUES],
+        key="admin_specific_games_league",
+    )
+    league_obj = get_league_by_name(league_for_games)
+    paths = get_paths(league_obj["slug"])
+    roster, teams, games, stats, highlights = load_league_data(paths)
 
     if games.empty:
-        st.info("No games stored.")
+        st.info(f"No games stored for {league_for_games}.")
     else:
         games_sorted = games.sort_values("date")
         labels = []
@@ -904,84 +988,107 @@ def page_admin(league_slug: str, league_name: str):
             ids.append(g["game_id"])
 
         selected_labels = st.multiselect(
-            "Select games to delete",
+            f"Select games to delete from {league_for_games}",
             labels,
-            key=f"{league_slug}_admin_delete_games",
+            key="admin_games_multiselect",
         )
         label_to_id = dict(zip(labels, ids))
         selected_ids = [label_to_id[l] for l in selected_labels]
 
-        if selected_ids and st.button("Delete Selected Games", key=f"{league_slug}_delete_games_btn"):
+        if selected_ids and st.button("Delete Selected Games", key="admin_delete_selected_games_btn"):
             games = games[~games["game_id"].isin(selected_ids)]
             stats = stats[~stats["game_id"].isin(selected_ids)]
             save_csv(paths["games"], games)
             save_csv(paths["stats"], stats)
-            st.success(f"Deleted {len(selected_ids)} game(s) and their stats.")
+            st.success(f"Deleted {len(selected_ids)} game(s) and their stats from {league_for_games}.")
 
     st.markdown("---")
 
-    # Delete ALL games & stats
-    st.subheader("Delete ALL Games & Stats (keep roster & highlights)")
-    st.warning(
-        "This will remove every game and every stat entry for this league, "
-        "but keep your roster, teams, and highlights."
+    # ----- Delete ALL games & stats -----
+    st.subheader("Delete ALL Games & Stats")
+
+    games_target = st.selectbox(
+        "Delete games & stats for:",
+        ["All Leagues"] + [lg["name"] for lg in LEAGUES],
+        key="admin_games_target",
     )
     confirm_all_games = st.checkbox(
-        "I understand, delete ALL games & stats",
-        key=f"{league_slug}_confirm_delete_all_games",
+        "I understand this will permanently delete games & stats.",
+        key="admin_confirm_all_games",
     )
-    if confirm_all_games and st.button("Delete ALL Games & Stats", key=f"{league_slug}_delete_all_games_btn"):
-        games = new_games_df()
-        stats = new_stats_df()
-        save_csv(paths["games"], games)
-        save_csv(paths["stats"], stats)
-        st.success("All games and stats have been deleted for this league.")
+    if confirm_all_games and st.button("Delete ALL Games & Stats", key="admin_delete_all_games_btn"):
+        if games_target == "All Leagues":
+            targets = LEAGUES
+        else:
+            targets = [lg for lg in LEAGUES if lg["name"] == games_target]
+
+        for lg in targets:
+            paths = get_paths(lg["slug"])
+            games = new_games_df()
+            stats = new_stats_df()
+            save_csv(paths["games"], games)
+            save_csv(paths["stats"], stats)
+
+        st.success(f"Deleted all games & stats for: {', '.join([t['name'] for t in targets])}")
 
     st.markdown("---")
 
-    # Delete ALL highlights
-    st.subheader("Delete ALL Highlights (this league)")
+    # ----- Delete ALL highlights -----
+    st.subheader("Delete ALL Highlights")
+
+    hl_target = st.selectbox(
+        "Delete highlights for:",
+        ["All Leagues"] + [lg["name"] for lg in LEAGUES],
+        key="admin_hl_target",
+    )
     confirm_hl = st.checkbox(
-        "I understand, delete ALL highlights",
-        key=f"{league_slug}_confirm_delete_hl",
+        "I understand this will permanently delete highlights and videos.",
+        key="admin_confirm_hl",
     )
-    if confirm_hl and st.button("Delete ALL Highlights", key=f"{league_slug}_delete_all_hl_btn"):
-        highlights = new_highlights_df()
-        save_csv(paths["highlights"], highlights)
-        # Optionally clear video files
-        videos_dir = paths["videos_dir"]
-        if videos_dir.exists():
-            for p in videos_dir.iterdir():
-                if p.is_file():
-                    p.unlink()
-        st.success("All highlights (and videos) deleted for this league.")
+    if confirm_hl and st.button("Delete ALL Highlights", key="admin_delete_all_hl_btn"):
+        if hl_target == "All Leagues":
+            targets = LEAGUES
+        else:
+            targets = [lg for lg in LEAGUES if lg["name"] == hl_target]
+
+        for lg in targets:
+            paths = get_paths(lg["slug"])
+            highlights = new_highlights_df()
+            save_csv(paths["highlights"], highlights)
+            videos_dir = paths["videos_dir"]
+            if videos_dir.exists():
+                for p in videos_dir.iterdir():
+                    if p.is_file():
+                        p.unlink()
+
+        st.success(f"Deleted all highlights for: {', '.join([t['name'] for t in targets])}")
 
     st.markdown("---")
 
-    # Full reset
-    st.subheader("Delete EVERYTHING for This League (Roster, Teams, Games, Stats, Highlights)")
+    # ----- Full reset -----
+    st.subheader("FULL RESET – All Data for All Leagues")
     st.error(
-        "This will completely reset THIS league only. "
-        "You will need to upload a new roster and re-enter all games, stats, and highlights."
+        "This will completely reset ALL leagues. "
+        "You will need to upload new rosters and re-enter all games, stats, and highlights."
     )
     confirm_everything = st.checkbox(
-        "I REALLY understand, delete EVERYTHING for this league",
-        key=f"{league_slug}_confirm_full_reset",
+        "I REALLY understand, delete EVERYTHING for all leagues.",
+        key="admin_confirm_full_reset",
     )
-    if confirm_everything and st.button("Full Reset: Clear All Data for This League",
-                                        key=f"{league_slug}_full_reset_btn"):
-        # Delete all files
-        for path in [paths["roster"], paths["teams"], paths["games"], paths["stats"], paths["highlights"]]:
-            if path.exists():
-                path.unlink()
-
-        videos_dir = paths["videos_dir"]
-        if videos_dir.exists():
-            for p in videos_dir.iterdir():
-                if p.is_file():
+    if confirm_everything and st.button("Full Reset: Clear All Data for ALL Leagues", key="admin_full_reset_btn"):
+        for lg in LEAGUES:
+            paths = get_paths(lg["slug"])
+            for p in [paths["roster"], paths["teams"], paths["games"], paths["stats"], paths["highlights"]]:
+                if p.exists():
                     p.unlink()
 
-        st.success("All data cleared for this league. Go to Setup to upload a fresh roster.")
+            videos_dir = paths["videos_dir"]
+            if videos_dir.exists():
+                for p in videos_dir.iterdir():
+                    if p.is_file():
+                        p.unlink()
+
+        st.success("All data cleared for ALL leagues. Go to Setup to upload fresh rosters.")
 
 
 # -----------------------------------------
@@ -993,9 +1100,10 @@ def main():
 
     st.sidebar.title("Crest League Manager")
 
+    # League selector in sidebar for normal league work
     league_names = [lg["name"] for lg in LEAGUES]
     default_index = next(i for i, lg in enumerate(LEAGUES) if lg["slug"] == "senior")
-    selected_league_name = st.sidebar.selectbox("League", league_names, index=default_index)
+    selected_league_name = st.sidebar.selectbox("League (for Setup/Stats)", league_names, index=default_index)
     league = get_league_by_name(selected_league_name)
     league_slug = league["slug"]
     league_name = league["name"]
@@ -1005,7 +1113,7 @@ def main():
     if logo_path.exists():
         st.sidebar.image(str(logo_path), use_column_width=True)
 
-    st.sidebar.caption(f"Managing data for: **{league_name}**")
+    st.sidebar.caption(f"Managing league data for: **{league_name}**")
 
     page = st.sidebar.radio(
         "Go to",
@@ -1032,9 +1140,9 @@ def main():
     elif page == "Highlights":
         page_highlights(league_slug, league_name)
     elif page == "Display Board":
-        page_display_board(league_slug, league_name)
+        page_display_board_global()
     elif page == "Admin / Clear Data":
-        page_admin(league_slug, league_name)
+        page_admin_global()
 
 
 if __name__ == "__main__":
