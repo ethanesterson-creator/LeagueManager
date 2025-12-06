@@ -101,6 +101,26 @@ def get_game_points(sport: str, level: str) -> int:
 
 
 # -----------------------------------------
+# Non-game point categories (from proposal)
+# -----------------------------------------
+
+NON_GAME_CATEGORIES = [
+    "Friday Night Songs",
+    "Cheering / Spirit",
+    "Sportsmanship",
+    "Bonding Event / Team Community",
+    "Neb Event – Whist",
+    "Neb Event – Gaga",
+    "Neb Event – Tennis",
+    "Neb Event – Pickleball",
+    "Neb Event – Chess",
+    "Neb Event – Tetherball",
+    "Staff Game Performance",
+    "Leadership – Captains",
+    "Other (write-in)",
+]
+
+# -----------------------------------------
 # Paths – always per league now
 # -----------------------------------------
 
@@ -113,6 +133,7 @@ def get_paths(slug: str):
         "stats": Path(f"{base}_stats.csv"),
         "highlights": Path(f"{base}_highlights.csv"),
         "videos_dir": Path(f"{base}_highlight_videos"),
+        "nongame": Path(f"{base}_nongame.csv"),
     }
 
 
@@ -137,6 +158,12 @@ def new_highlights_df():
     return pd.DataFrame(columns=[
         "highlight_id", "date", "title", "description", "video_path",
         "sport", "level", "team1", "team2", "featured"
+    ])
+
+
+def new_nongame_df():
+    return pd.DataFrame(columns=[
+        "id", "date", "team_name", "category", "reason", "points"
     ])
 
 
@@ -205,11 +232,21 @@ def load_league_data(paths: dict):
     return roster, teams, games, stats, highlights
 
 
+def load_nongame(paths: dict):
+    return load_csv(paths["nongame"], new_nongame_df().columns)
+
+
 # -----------------------------------------
 # Core calculations
 # -----------------------------------------
 
-def compute_standings(games: pd.DataFrame, teams: pd.DataFrame):
+def compute_standings(games: pd.DataFrame,
+                      teams: pd.DataFrame,
+                      nongame: pd.DataFrame | None = None,
+                      rank_by: str = "total"):
+    """
+    rank_by: "game" or "total"
+    """
     if teams is None or teams.empty:
         return pd.DataFrame()
 
@@ -218,49 +255,67 @@ def compute_standings(games: pd.DataFrame, teams: pd.DataFrame):
     standings["w"] = 0
     standings["l"] = 0
     standings["t"] = 0
-    standings["pts"] = 0
+    standings["game_points"] = 0
     standings["points_for"] = 0
     standings["points_against"] = 0
     standings["diff"] = 0
 
-    if games.empty:
-        return standings
+    if not games.empty:
+        for _, g in games.iterrows():
+            team1 = g["team1"]
+            team2 = g["team2"]
+            s1 = int(g["score1"])
+            s2 = int(g["score2"])
+            sport = g.get("sport", "Other")
+            level = g.get("level", "A")
+            win_points = get_game_points(sport, level)
 
-    for _, g in games.iterrows():
-        team1 = g["team1"]
-        team2 = g["team2"]
-        s1 = int(g["score1"])
-        s2 = int(g["score2"])
-        sport = g.get("sport", "Other")
-        level = g.get("level", "A")
-        win_points = get_game_points(sport, level)
+            for team_name, scored, allowed in [(team1, s1, s2), (team2, s2, s1)]:
+                idx = standings["team_name"] == team_name
+                standings.loc[idx, "gp"] += 1
+                standings.loc[idx, "points_for"] += scored
+                standings.loc[idx, "points_against"] += allowed
 
-        for team_name, scored, allowed in [(team1, s1, s2), (team2, s2, s1)]:
-            idx = standings["team_name"] == team_name
-            standings.loc[idx, "gp"] += 1
-            standings.loc[idx, "points_for"] += scored
-            standings.loc[idx, "points_against"] += allowed
+            if s1 > s2:
+                standings.loc[standings["team_name"] == team1, "w"] += 1
+                standings.loc[standings["team_name"] == team2, "l"] += 1
+                standings.loc[standings["team_name"] == team1, "game_points"] += win_points
+            elif s2 > s1:
+                standings.loc[standings["team_name"] == team2, "w"] += 1
+                standings.loc[standings["team_name"] == team1, "l"] += 1
+                standings.loc[standings["team_name"] == team2, "game_points"] += win_points
+            else:
+                half = win_points // 2
+                standings.loc[standings["team_name"] == team1, "t"] += 1
+                standings.loc[standings["team_name"] == team2, "t"] += 1
+                standings.loc[standings["team_name"] == team1, "game_points"] += half
+                standings.loc[standings["team_name"] == team2, "game_points"] += half
 
-        if s1 > s2:
-            standings.loc[standings["team_name"] == team1, "w"] += 1
-            standings.loc[standings["team_name"] == team2, "l"] += 1
-            standings.loc[standings["team_name"] == team1, "pts"] += win_points
-        elif s2 > s1:
-            standings.loc[standings["team_name"] == team2, "w"] += 1
-            standings.loc[standings["team_name"] == team1, "l"] += 1
-            standings.loc[standings["team_name"] == team2, "pts"] += win_points
-        else:
-            half = win_points // 2
-            standings.loc[standings["team_name"] == team1, "t"] += 1
-            standings.loc[standings["team_name"] == team2, "t"] += 1
-            standings.loc[standings["team_name"] == team1, "pts"] += half
-            standings.loc[standings["team_name"] == team2, "pts"] += half
+    # Non-game points
+    standings["non_game_points"] = 0
+    if nongame is not None and not nongame.empty:
+        ng_sum = nongame.groupby("team_name")["points"].sum().reset_index()
+        standings = standings.merge(ng_sum, on="team_name", how="left", suffixes=("", "_ng"))
+        standings["non_game_points"] = standings["points"].fillna(0)
+        standings.drop(columns=["points"], inplace=True)
+
+    # Total
+    standings["total_points"] = standings["game_points"] + standings["non_game_points"]
 
     standings["diff"] = standings["points_for"] - standings["points_against"]
+
+    if rank_by == "game":
+        sort_key = "game_points"
+    else:
+        sort_key = "total_points"
+
     standings = standings.sort_values(
-        by=["pts", "diff", "points_for", "team_name"],
-        ascending=[False, False, False, True]
+        by=[sort_key, "diff", "points_for", "team_name"],
+        ascending=[False, False, False, True],
     ).reset_index(drop=True)
+
+    # For backward-compat (if anything expects "pts")
+    standings["pts"] = standings["total_points"]
 
     return standings
 
@@ -284,7 +339,7 @@ def compute_leaderboard(stats: pd.DataFrame, sport: str, stat_type: str):
 
 
 # -----------------------------------------
-# League-specific pages (Setup, Scores, Standings, Leaderboards, Highlights)
+# League-specific pages (Setup, Scores, Standings, Leaderboards, Highlights, Non-Game Points)
 # -----------------------------------------
 
 def page_setup(league_slug: str, league_name: str):
@@ -547,6 +602,7 @@ def page_enter_scores_and_stats(league_slug: str, league_name: str):
 def page_standings(league_slug: str, league_name: str):
     paths = get_paths(league_slug)
     roster, teams, games, stats, highlights = load_league_data(paths)
+    nongame = load_nongame(paths)
 
     st.header(f"{league_name} – Standings")
 
@@ -554,7 +610,7 @@ def page_standings(league_slug: str, league_name: str):
         st.warning("You need to upload a roster first on the 'Setup' page for this league.")
         return
 
-    standings = compute_standings(games, teams)
+    standings = compute_standings(games, teams, nongame, rank_by="total")
     if standings.empty:
         st.info("No games yet. Enter some results first.")
         return
@@ -567,7 +623,9 @@ def page_standings(league_slug: str, league_name: str):
         "w": "W",
         "l": "L",
         "t": "T",
-        "pts": "Pts",
+        "game_points": "Game Pts",
+        "non_game_points": "Non-Game Pts",
+        "total_points": "Total Pts",
         "points_for": "PF",
         "points_against": "PA",
         "diff": "Diff",
@@ -735,6 +793,95 @@ def page_highlights(league_slug: str, league_name: str):
                     st.warning("Video file not found. It may have been moved or deleted.")
 
 
+def page_non_game_points(league_slug: str, league_name: str):
+    paths = get_paths(league_slug)
+    roster, teams, games, stats, highlights = load_league_data(paths)
+    nongame = load_nongame(paths)
+
+    st.header(f"{league_name} – Non-Game Points")
+
+    if teams is None:
+        st.warning("You need a roster/teams loaded on the Setup page before adding non-game points.")
+        return
+
+    teams_list = teams["team_name"].tolist()
+
+    st.write(
+        """
+        Use this to award points for **non-game things** from the Crest League proposal:
+        Friday night songs, cheering, sportsmanship, Neb events, staff games, leadership, etc.
+        """
+    )
+
+    col_form, col_list = st.columns([2, 3])
+
+    with col_form:
+        st.subheader("Add Non-Game Points")
+        with st.form(f"{league_slug}_nongame_form", clear_on_submit=True):
+            ng_date = st.date_input("Date", value=date.today())
+            team_name = st.selectbox("Team", teams_list)
+            category = st.selectbox("Category", NON_GAME_CATEGORIES)
+
+            reason = ""
+            if category == "Other (write-in)":
+                reason = st.text_input("Describe the reason for these points")
+            else:
+                reason = st.text_input(
+                    "Optional note (e.g., 'Week 2 Friday Night Songs')",
+                    value="",
+                )
+
+            points = st.number_input(
+                "Points to award",
+                min_value=-1000,
+                max_value=1000,
+                value=5,
+                step=1,
+            )
+
+            submitted = st.form_submit_button("Add Points")
+            if submitted:
+                if not team_name:
+                    st.error("Please choose a team.")
+                elif category == "Other (write-in)" and not reason.strip():
+                    st.error("Please describe the reason for 'Other (write-in)'.")
+                else:
+                    if nongame.empty:
+                        next_id = 1
+                    else:
+                        next_id = int(nongame["id"].max()) + 1
+
+                    new_row = {
+                        "id": next_id,
+                        "date": ng_date,
+                        "team_name": team_name,
+                        "category": category,
+                        "reason": reason.strip(),
+                        "points": int(points),
+                    }
+                    nongame = pd.concat(
+                        [nongame, pd.DataFrame([new_row])],
+                        ignore_index=True,
+                    )
+                    save_csv(paths["nongame"], nongame)
+                    st.success(f"Awarded {int(points)} non-game points to {team_name}.")
+
+    with col_list:
+        st.subheader("Non-Game Points History")
+        if nongame.empty:
+            st.info("No non-game points recorded yet.")
+        else:
+            display = nongame.sort_values("date", ascending=False).copy()
+            display = display.rename(columns={
+                "date": "Date",
+                "team_name": "Team",
+                "category": "Category",
+                "reason": "Reason",
+                "points": "Points",
+            })
+            st.dataframe(display, use_container_width=True)
+
+
 # -----------------------------------------
 # GLOBAL DISPLAY BOARD
 # -----------------------------------------
@@ -745,15 +892,21 @@ def render_display_view(display_type: str, league_slug: str):
     league_name = league["name"]
     paths = get_paths(league_slug)
     roster, teams, games, stats, highlights = load_league_data(paths)
+    nongame = load_nongame(paths)
 
     if display_type == "Standings":
         if teams is None:
             st.info(f"No roster/teams yet for {league_name}.")
             return
-        standings = compute_standings(games, teams)
+
+        basis = st.session_state.get("display_standings_basis", "Game + Non-Game (Total)")
+        rank_by = "game" if basis == "Game Points Only" else "total"
+
+        standings = compute_standings(games, teams, nongame, rank_by=rank_by)
         if standings.empty:
             st.info("No games yet.")
             return
+
         display = standings.copy()
         display.insert(0, "Rank", range(1, len(display) + 1))
         display = display.rename(columns={
@@ -762,12 +915,14 @@ def render_display_view(display_type: str, league_slug: str):
             "w": "W",
             "l": "L",
             "t": "T",
-            "pts": "Pts",
+            "game_points": "Game Pts",
+            "non_game_points": "Non-Game Pts",
+            "total_points": "Total Pts",
             "points_for": "PF",
             "points_against": "PA",
             "diff": "Diff",
         })
-        st.markdown(f"## {league_name} – Standings")
+        st.markdown(f"## {league_name} – Standings ({basis})")
         st.dataframe(display, use_container_width=True)
 
     elif display_type == "Stat Leaders":
@@ -841,6 +996,8 @@ def page_display_board_global():
         st.session_state.display_league_slug = "senior"
     if "display_type" not in st.session_state:
         st.session_state.display_type = "Standings"
+    if "display_standings_basis" not in st.session_state:
+        st.session_state.display_standings_basis = "Game + Non-Game (Total)"
 
     view_mode = st.radio(
         "View Mode",
@@ -875,6 +1032,17 @@ def page_display_board_global():
         )
         st.session_state.display_type = display_type
 
+        # Extra options for Standings
+        if display_type == "Standings":
+            basis = st.selectbox(
+                "Standings based on:",
+                ["Game Points Only", "Game + Non-Game (Total)"],
+                index=["Game Points Only", "Game + Non-Game (Total)"].index(
+                    st.session_state.display_standings_basis
+                ),
+            )
+            st.session_state.display_standings_basis = basis
+
         # Extra options for Stat Leaders
         if display_type == "Stat Leaders":
             paths = get_paths(selected_league["slug"])
@@ -908,7 +1076,7 @@ def page_display_board_global():
         st.caption("When you're happy, switch 'View Mode' to **Screen View** and put the browser in full-screen on the TV.")
 
     else:  # Screen View
-        # Only the content, no controls
+        # Only the content, no controls (aside from sidebar)
         render_display_view(st.session_state.display_type, st.session_state.display_league_slug)
 
 
@@ -926,6 +1094,7 @@ def page_admin_global():
         name = lg["name"]
         paths = get_paths(slug)
         roster, teams, games, stats, highlights = load_league_data(paths)
+        nongame = load_nongame(paths)
         summary_rows.append({
             "League": name,
             "Roster rows": 0 if roster is None else len(roster),
@@ -933,6 +1102,7 @@ def page_admin_global():
             "Games": len(games),
             "Stat entries": len(stats),
             "Highlights": len(highlights),
+            "Non-Game entries": len(nongame),
         })
     st.subheader("Current Data Overview")
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
@@ -1065,11 +1235,38 @@ def page_admin_global():
 
     st.markdown("---")
 
+    # ----- Delete ALL Non-Game Points -----
+    st.subheader("Delete ALL Non-Game Points")
+
+    ng_target = st.selectbox(
+        "Delete non-game points for:",
+        ["All Leagues"] + [lg["name"] for lg in LEAGUES],
+        key="admin_ng_target",
+    )
+    confirm_ng = st.checkbox(
+        "I understand this will permanently delete all non-game points.",
+        key="admin_confirm_ng",
+    )
+    if confirm_ng and st.button("Delete ALL Non-Game Points", key="admin_delete_all_ng_btn"):
+        if ng_target == "All Leagues":
+            targets = LEAGUES
+        else:
+            targets = [lg for lg in LEAGUES if lg["name"] == ng_target]
+
+        for lg in targets:
+            paths = get_paths(lg["slug"])
+            nongame = new_nongame_df()
+            save_csv(paths["nongame"], nongame)
+
+        st.success(f"Deleted all non-game points for: {', '.join([t['name'] for t in targets])}")
+
+    st.markdown("---")
+
     # ----- Full reset -----
     st.subheader("FULL RESET – All Data for All Leagues")
     st.error(
         "This will completely reset ALL leagues. "
-        "You will need to upload new rosters and re-enter all games, stats, and highlights."
+        "You will need to upload new rosters and re-enter all games, stats, highlights, and non-game points."
     )
     confirm_everything = st.checkbox(
         "I REALLY understand, delete EVERYTHING for all leagues.",
@@ -1078,7 +1275,7 @@ def page_admin_global():
     if confirm_everything and st.button("Full Reset: Clear All Data for ALL Leagues", key="admin_full_reset_btn"):
         for lg in LEAGUES:
             paths = get_paths(lg["slug"])
-            for p in [paths["roster"], paths["teams"], paths["games"], paths["stats"], paths["highlights"]]:
+            for p in [paths["roster"], paths["teams"], paths["games"], paths["stats"], paths["highlights"], paths["nongame"]]:
                 if p.exists():
                     p.unlink()
 
@@ -1123,6 +1320,7 @@ def main():
             "Standings",
             "Leaderboards",
             "Highlights",
+            "Non-Game Points",
             "Display Board",
             "Admin / Clear Data",
         ],
@@ -1139,6 +1337,8 @@ def main():
         page_leaderboards(league_slug, league_name)
     elif page == "Highlights":
         page_highlights(league_slug, league_name)
+    elif page == "Non-Game Points":
+        page_non_game_points(league_slug, league_name)
     elif page == "Display Board":
         page_display_board_global()
     elif page == "Admin / Clear Data":
