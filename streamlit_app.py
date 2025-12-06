@@ -1087,6 +1087,33 @@ def page_display_board_global():
 def page_admin_global():
     st.header("Admin / Clear Data – All Leagues")
 
+    # ---------------- PASSWORD GATE ----------------
+    # Require password Hyaffa26 before showing any admin controls
+    if "admin_authenticated" not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    if not st.session_state.admin_authenticated:
+        st.info("Admin access is password protected.")
+        pw = st.text_input("Enter admin password", type="password", key="admin_pw_input")
+        col_pw_btn, col_pw_spacer = st.columns([1, 3])
+        with col_pw_btn:
+            if st.button("Unlock Admin", key="admin_pw_btn"):
+                if pw == "Hyaffa26":
+                    st.session_state.admin_authenticated = True
+                    st.success("Access granted.")
+                else:
+                    st.error("Incorrect password.")
+        # Stop rendering the rest of the page until password is correct
+        st.stop()
+
+    # Optional: show a small logout button
+    with st.expander("Admin Session", expanded=False):
+        if st.button("Lock Admin Area", key="admin_logout_btn"):
+            st.session_state.admin_authenticated = False
+            st.success("Admin area locked again. Reload or re-enter password to access.")
+
+    # ---------------- ORIGINAL ADMIN CONTENT ----------------
+
     # Summary table
     summary_rows = []
     for lg in LEAGUES:
@@ -1203,7 +1230,7 @@ def page_admin_global():
 
     st.markdown("---")
 
-    # ----- Delete ALL highlights -----
+    # ----- Delete ALL Highlights -----
     st.subheader("Delete ALL Highlights")
 
     hl_target = st.selectbox(
@@ -1286,6 +1313,7 @@ def page_admin_global():
                         p.unlink()
 
         st.success("All data cleared for ALL leagues. Go to Setup to upload fresh rosters.")
+
 
 
 # -----------------------------------------
