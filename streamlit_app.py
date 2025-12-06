@@ -37,11 +37,15 @@ SPORT_STAT_CATEGORIES = {
         ("basket_points", "Points"),
         ("basket_assists", "Assists"),
         ("basket_rebounds", "Rebounds"),
+        ("basket_steals", "Steals"),
+        ("basket_blocks", "Blocks"),
     ],
     "Softball": [
         ("soft_hits", "Hits"),
         ("soft_doubles", "Doubles"),
         ("soft_home_runs", "Home Runs"),
+        ("soft_rbis", "RBIs"),
+        ("soft_strikeouts", "Strikeouts"),
     ],
     "Kickball": [
         ("kick_runs", "Runs"),
