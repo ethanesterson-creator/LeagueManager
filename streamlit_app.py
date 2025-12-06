@@ -1101,6 +1101,8 @@ def page_admin_global():
                 if pw == "Hyaffa26":
                     st.session_state.admin_authenticated = True
                     st.success("Access granted.")
+                    # Immediately rerun so we skip the password gate on this run
+                    st.experimental_rerun()
                 else:
                     st.error("Incorrect password.")
         # Stop rendering the rest of the page until password is correct
@@ -1108,9 +1110,12 @@ def page_admin_global():
 
     # Optional: show a small logout button
     with st.expander("Admin Session", expanded=False):
+        st.caption("You are logged in to the admin area.")
         if st.button("Lock Admin Area", key="admin_logout_btn"):
             st.session_state.admin_authenticated = False
-            st.success("Admin area locked again. Reload or re-enter password to access.")
+            st.success("Admin area locked again.")
+            # Immediately rerun so we go back to the password screen
+            st.experimental_rerun()
 
     # ---------------- ORIGINAL ADMIN CONTENT ----------------
 
