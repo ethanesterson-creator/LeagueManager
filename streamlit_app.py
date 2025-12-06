@@ -1102,7 +1102,7 @@ def page_admin_global():
                     st.session_state.admin_authenticated = True
                     st.success("Access granted.")
                     # Immediately rerun so we skip the password gate on this run
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("Incorrect password.")
         # Stop rendering the rest of the page until password is correct
@@ -1115,7 +1115,7 @@ def page_admin_global():
             st.session_state.admin_authenticated = False
             st.success("Admin area locked again.")
             # Immediately rerun so we go back to the password screen
-            st.experimental_rerun()
+            st.rerun()
 
     # ---------------- ORIGINAL ADMIN CONTENT ----------------
 
